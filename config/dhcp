@@ -1,0 +1,20 @@
+
+config dhcp 'lan'
+	option interface 'lan'
+	option start '100'
+	option limit '150'
+	option leasetime '12h'
+	option domain 'lan'
+	option dhcpv4 'server'
+	option dhcpv6 'server'
+	option ra 'server'
+	option ra_slaac '1'
+	list ra_flags 'managed-config'
+	list ra_flags 'other-config'
+
+config odhcpd 'odhcpd'
+	option maindhcp '0'
+	option leasefile '/tmp/hosts/odhcpd'
+	option leasetrigger '/usr/sbin/odhcpd-update'
+	option loglevel '4'
+

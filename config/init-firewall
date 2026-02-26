@@ -1,0 +1,11 @@
+#!/bin/sh
+# 自定义初始化脚本：在网络启动后清理防火墙规则
+# 放置在 /etc/rc.d/S99docker-init 中
+
+# 等待网络就绪
+sleep 10
+
+# 清理防火墙规则
+fw4 flush 2>/dev/null
+
+exit 0

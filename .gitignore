@@ -1,0 +1,18 @@
+# 忽略 plugins 目录下所有子目录（插件仓库单独管理）
+plugins/*/
+
+# 忽略 packages 中的 IPK 包
+packages/*.ipk
+
+# 忽略日志
+logs/
+
+# 编辑器临时文件
+*.swp
+*.swo
+*.tmp
+*~
+.DS_Store
+
+# Docker 运行时数据
+*.pid
