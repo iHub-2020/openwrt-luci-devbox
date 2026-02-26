@@ -61,6 +61,14 @@ fi
 load_plugins() {
   mkdir -p /usr/lib/lua/luci/controller /usr/lib/lua/luci/view /www/luci-static/resources/view
 
+  # ── Clean up dangling symlinks from previous deployments ──────
+  for link_dir in /usr/lib/lua/luci/controller /usr/lib/lua/luci/view /www/luci-static/resources/view; do
+    [ -d "$link_dir" ] || continue
+    for link in "$link_dir"/*; do
+      [ -L "$link" ] && [ ! -e "$link" ] && rm -f "$link" && log "INFO: Removed dangling symlink: $link"
+    done
+  done
+
   # Scan for luci-app-* directly under /luci-plugins/
   for plugin_dir in /luci-plugins/luci-app-*; do
     [ -d "$plugin_dir" ] || continue
