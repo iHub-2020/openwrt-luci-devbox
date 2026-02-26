@@ -1,0 +1,89 @@
+version: "3.8"
+################################################################################
+# OpenWrt LuCI Development Environment Stack (Enterprise Edition)            #
+# Version: 1.0.0                                                             #
+# Project: OpenWrt LuCI Plugin Development Environment                       #
+# Image: openwrt/rootfs:x86_64-23.05.5                                       #
+# Date: 2025-02-26                                                           #
+# Features: Enterprise config + Health check + Resource limits               #
+################################################################################
+#                                                                            #
+# Core Features:                                                             #
+# - Image version locked (OpenWrt 23.05.5)                                   #
+# - privileged mode (iptables isolated in container)                         #
+# - Dev directory isolated (/home/reyan/Projects/openwrt-luci-devbox)        #
+# - Health check (wget detect uhttpd)                                        #
+# - Resource limits (prevent resource abuse)                                 #
+# - Bridge network mode (port mapping)                                       #
+# - Overlay persistence (keep installed packages)                            #
+#                                                                            #
+# Notes:                                                                     #
+# - privileged mode for iptables isolation (only inside container)           #
+# - Ports 8080(HTTP) 8443(HTTPS) 2222(SSH) need firewall open                #
+# - Dev files at /home/reyan/Projects/openwrt-luci-devbox/                   #
+# - Container config at /opt/openwrt-luci-devbox/                            #
+################################################################################
+
+services:
+  openwrt:
+    # Image version locked (OpenWrt 23.05.5 stable)
+    image: openwrt/rootfs:x86_64-23.05.5
+    container_name: openwrt-luci-devbox
+    hostname: openwrt-luci-devbox
+    restart: unless-stopped
+
+    # Privileged mode (iptables isolated in container)
+    privileged: true
+
+    # Port mapping
+    ports:
+      - "8080:80" # LuCI HTTP
+      - "8443:443" # LuCI HTTPS
+      - "2222:22" # SSH
+
+    # Environment variables
+    environment:
+      - TZ=Asia/Shanghai
+
+    # Volume mounts
+    volumes:
+      # Entrypoint script (read-only)
+      - /opt/openwrt-luci-devbox/entrypoint.sh:/entrypoint.sh:ro
+      # LuCI plugins development directory
+      - /home/reyan/Projects/openwrt-luci-devbox/plugins:/luci-plugins
+      # IPK packages directory
+      - /home/reyan/Projects/openwrt-luci-devbox/packages:/packages
+      # Overlay persistence (keep installed packages)
+      - openwrt-overlay:/overlay
+
+    # Entrypoint config
+    entrypoint: [ "/bin/sh", "/entrypoint.sh" ]
+
+    # Health check (detect uhttpd service)
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q -O /dev/null http://localhost/ || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Resource limits (prevent single container from using too many resources)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+    # Labels
+    labels:
+      - "com.openwrt.role=luci-dev"
+      - "com.openwrt.project=luci-plugin-dev"
+      - "com.openwrt.version=1.0.0"
+
+# Named volumes
+volumes:
+  openwrt-overlay:
+    name: openwrt-overlay
