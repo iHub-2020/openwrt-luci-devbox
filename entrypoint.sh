@@ -123,6 +123,43 @@ load_plugins() {
 
 load_plugins
 
+# ─────────────────────────────────────────────────────────────
+# Post-load: run uci-defaults, init UCI configs, clear LuCI cache
+# ─────────────────────────────────────────────────────────────
+
+# 1. Run uci-defaults scripts from plugins (initialize UCI configs etc.)
+for defaults_dir in /etc/uci-defaults; do
+  if [ -d "$defaults_dir" ]; then
+    for script in "$defaults_dir"/*; do
+      [ -x "$script" ] || chmod +x "$script"
+      "$script" 2>/dev/null && rm -f "$script"
+    done
+  fi
+done
+log "INFO: uci-defaults executed"
+
+# 2. Auto-create missing UCI config files required by menu.d depends.uci
+for menu_json in /usr/share/luci/menu.d/luci-app-*.json; do
+  [ -f "$menu_json" ] || continue
+  # Extract UCI config names from "uci": { "<name>": true }
+  uci_names=$(grep -o '"uci"[[:space:]]*:[[:space:]]*{[^}]*}' "$menu_json" 2>/dev/null | grep -o '"[a-z0-9_-]*"[[:space:]]*:[[:space:]]*true' | sed 's/[" ]//g' | cut -d: -f1)
+  for cfg in $uci_names; do
+    [ -z "$cfg" ] && continue
+    if [ ! -f "/etc/config/$cfg" ]; then
+      touch "/etc/config/$cfg"
+      log "INFO: Created empty UCI config: /etc/config/$cfg"
+    fi
+  done
+done
+
+# 3. Clear LuCI module/index cache so new menus are picked up
+rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
+log "INFO: LuCI cache cleared"
+
+# 4. Reload rpcd so ACL entries take effect
+/etc/init.d/rpcd restart 2>/dev/null
+log "INFO: rpcd reloaded"
+
 /etc/init.d/uhttpd enable 2>/dev/null
 /etc/init.d/uhttpd start 2>/dev/null
 log "INFO: uhttpd started"
