@@ -135,27 +135,32 @@ load_plugins
 # Post-load: run uci-defaults, init UCI configs, clear LuCI cache
 # ─────────────────────────────────────────────────────────────
 
-# 1. Run uci-defaults scripts from plugins (initialize UCI configs etc.)
-for defaults_dir in /etc/uci-defaults; do
-  if [ -d "$defaults_dir" ]; then
-    for script in "$defaults_dir"/*; do
-      [ -x "$script" ] || chmod +x "$script"
-      "$script" 2>/dev/null && rm -f "$script"
-    done
-  fi
+# 1. Run uci-defaults scripts from all plugins
+#    Scan both standard path (/etc/uci-defaults/) and non-standard paths
+#    that plugins may have placed under root/usr/share/etc/uci-defaults/
+for defaults_dir in /etc/uci-defaults /usr/share/etc/uci-defaults; do
+  [ -d "$defaults_dir" ] || continue
+  for script in "$defaults_dir"/*; do
+    [ -f "$script" ] || continue
+    [ -x "$script" ] || chmod +x "$script"
+    sh "$script" 2>/dev/null && rm -f "$script" && log "INFO: uci-default executed: $(basename $script)"
+  done
 done
 log "INFO: uci-defaults executed"
 
 # 2. Auto-create missing UCI config files required by menu.d depends.uci
+#    Creates a valid UCI section (not just empty touch) so LuCI menu.d depends check passes
 for menu_json in /usr/share/luci/menu.d/luci-app-*.json; do
   [ -f "$menu_json" ] || continue
   # Extract UCI config names from "uci": { "<name>": true }
   uci_names=$(grep -o '"uci"[[:space:]]*:[[:space:]]*{[^}]*}' "$menu_json" 2>/dev/null | grep -o '"[a-z0-9_-]*"[[:space:]]*:[[:space:]]*true' | sed 's/[" ]//g' | cut -d: -f1)
   for cfg in $uci_names; do
     [ -z "$cfg" ] && continue
-    if [ ! -f "/etc/config/$cfg" ]; then
-      touch "/etc/config/$cfg"
-      log "INFO: Created empty UCI config: /etc/config/$cfg"
+    # Only create if file missing or empty (uci-defaults may have already created it)
+    if [ ! -s "/etc/config/$cfg" ]; then
+      # Write a minimal valid UCI section so LuCI depends.uci check passes
+      printf "config globals 'globals'\n\toption enabled '0'\n" > "/etc/config/$cfg"
+      log "INFO: Created UCI config with valid section: /etc/config/$cfg"
     fi
   done
 done
