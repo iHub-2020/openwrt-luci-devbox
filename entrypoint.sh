@@ -107,9 +107,14 @@ load_plugins() {
       done
     fi
 
-    # ── Merge root/ into rootfs (no overwrite) ────────────────
+    # ── Merge root/ into rootfs (file by file, no overwrite) ──
     if [ -d "$plugin_dir/root" ]; then
-      cp -rn "$plugin_dir/root/." / 2>/dev/null
+      find "$plugin_dir/root" -type f | while read src; do
+        rel="${src#$plugin_dir/root/}"
+        dest="/$rel"
+        mkdir -p "$(dirname "$dest")"
+        [ ! -e "$dest" ] && cp "$src" "$dest"
+      done
       log "INFO: [root] merged: $plugin_name"
     fi
   done
