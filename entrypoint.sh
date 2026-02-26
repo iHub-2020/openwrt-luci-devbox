@@ -59,8 +59,8 @@ fi
 load_plugins() {
   mkdir -p /usr/lib/lua/luci/controller /usr/lib/lua/luci/view
 
-  # Scan two levels deep: /luci-plugins/<repo>/<plugin> or /luci-plugins/<plugin>
-  for plugin_dir in /luci-plugins/luci-app-* /luci-plugins/*/luci-app-*; do
+  # Scan for luci-app-* directly under /luci-plugins/
+  for plugin_dir in /luci-plugins/luci-app-*; do
     [ -d "$plugin_dir" ] || continue
     plugin_name=$(basename "$plugin_dir")
 

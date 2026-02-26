@@ -14,6 +14,7 @@
 - ✅ SSH 访问
 - ✅ 健康检查（自动验证 uhttpd 状态）
 - ✅ 插件热重载（修改代码 → 刷新浏览器即生效）
+- ✅ 启动时自动加载 `plugins/luci-app-*` 目录下的所有插件
 
 ## 快速开始
 
@@ -22,17 +23,20 @@
 git clone https://github.com/iHub-2020/openwrt-luci-devbox.git
 cd openwrt-luci-devbox
 
-# 2. 克隆插件仓库到 plugins/ 目录
-mkdir -p plugins
-cd plugins
-git clone https://github.com/iHub-2020/openwrt-reyan_new.git
+# 2. 拉取插件仓库（sparse-checkout，只下载插件和依赖目录）
+git clone --filter=blob:none --sparse https://github.com/iHub-2020/openwrt-reyan_new.git plugins/
+cd plugins && git sparse-checkout set \
+  luci-app-phantun phantun \
+  luci-app-poweroffdevice \
+  luci-app-udp-speeder udpspeeder \
+  luci-app-udp-tunnel udp2raw
 cd ..
 
 # 3. 启动容器（Portainer Stack 或命令行）
 docker compose up -d
 
 # 4. 等待约 60 秒（首次安装依赖），查看状态
-docker ps --filter "name=openwrt-dev"
+docker ps --filter "name=openwrt-luci-devbox"
 # 状态显示 (healthy) 即就绪
 ```
 
@@ -46,17 +50,24 @@ docker ps --filter "name=openwrt-dev"
 ## 开发工作流
 
 ```bash
-# 查看可用插件
+# 查看容器和插件状态
+./dev.sh status
 ./dev.sh list
 
-# 链接插件到容器
-./dev.sh link luci-app-poweroffdevice
-
-# 重启 uhttpd 使改动生效
+# 重启 uhttpd 使改动生效（修改代码后执行）
 ./dev.sh reload
+
+# 验证成功后推送单个插件到 GitHub
+./dev.sh push luci-app-poweroffdevice
+
+# 推送所有有改动的插件
+./dev.sh push-all
 
 # 查看容器日志
 ./dev.sh log
+
+# SSH 进入容器调试
+./dev.sh ssh
 ```
 
 ## 目录结构
@@ -64,14 +75,32 @@ docker ps --filter "name=openwrt-dev"
 ```
 openwrt-luci-devbox/
 ├── docker-compose.yml   # 容器编排配置
-├── entrypoint.sh        # 容器启动脚本
+├── entrypoint.sh        # 容器启动脚本（自动加载插件）
 ├── dev.sh               # 开发辅助脚本
 ├── config/              # OpenWrt UCI 配置模板
-├── plugins/             # 插件目录（挂载到容器，.gitignore 已排除）
+├── plugins/             # 插件目录（挂载到容器 /luci-plugins，.gitignore 已排除）
+│   ├── .git/            # → openwrt-reyan_new 仓库（用于 push 回 GitHub）
+│   ├── luci-app-phantun/       # LuCI 插件
+│   ├── phantun/                # ↑ 依赖二进制
+│   ├── luci-app-poweroffdevice/ # LuCI 插件（独立）
+│   ├── luci-app-udp-speeder/   # LuCI 插件
+│   ├── udpspeeder/             # ↑ 依赖二进制
+│   ├── luci-app-udp-tunnel/    # LuCI 插件
+│   └── udp2raw/                # ↑ 依赖二进制
 └── doc/
     ├── DEVELOPMENT.md   # 开发手册（插件结构、新建流程）
     └── USAGE.md         # 使用手册（调试命令、常见问题）
 ```
+
+## 插件自动加载机制
+
+容器启动时，`entrypoint.sh` 会自动扫描 `/luci-plugins/luci-app-*` 并：
+
+1. 将 `luasrc/controller/*.lua` 链接到 `/usr/lib/lua/luci/controller/`
+2. 将 `luasrc/view/<子目录>` 链接到 `/usr/lib/lua/luci/view/`
+3. 将 `root/` 目录合并到容器根文件系统
+
+**无需手动 link**，直接修改代码后执行 `./dev.sh reload` 即可。
 
 ## 文档
 

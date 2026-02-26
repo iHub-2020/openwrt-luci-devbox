@@ -5,8 +5,8 @@
 # ============================================================
 
 CONTAINER="openwrt-luci-devbox"
-PLUGINS_DIR="/luci-plugins/openwrt-reyan_new"
-LOCAL_PLUGINS_DIR="/home/reyan/Projects/openwrt-luci-devbox/plugins/openwrt-reyan_new"
+PLUGINS_DIR="/luci-plugins"
+LOCAL_PLUGINS_DIR="/home/reyan/Projects/openwrt-luci-devbox/plugins"
 
 usage() {
   echo "用法: $0 [命令] [插件名]"
