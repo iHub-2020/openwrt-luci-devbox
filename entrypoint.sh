@@ -241,9 +241,15 @@ load_deps() {
       zip_file="${dep_name}_${arch_tag}.zip"
       download_url="$base_url/$zip_file"
 
-      # Check if any binary already installed (overlay persistence)
+      # Check if any binary already installed (check OpenWrt overlay upper for persistence)
       already_installed=0
-      for candidate in "/usr/bin/${dep_name}" "/usr/bin/${dep_name}_client" "/usr/bin/${dep_name}_server"; do
+      for candidate in \
+        "/overlay/upper/usr/bin/${dep_name}" \
+        "/overlay/upper/usr/bin/${dep_name}_client" \
+        "/overlay/upper/usr/bin/${dep_name}_server" \
+        "/usr/bin/${dep_name}" \
+        "/usr/bin/${dep_name}_client" \
+        "/usr/bin/${dep_name}_server"; do
         [ -x "$candidate" ] && already_installed=1 && break
       done
       if [ "$already_installed" = "1" ]; then
@@ -264,11 +270,13 @@ load_deps() {
         extract_dir="/tmp/${dep_name}_extract"
         mkdir -p "$extract_dir"
         unzip -o "$tmp_zip" -d "$extract_dir" 2>/dev/null
+        # Install to OpenWrt overlay upper dir for persistence across container restarts
+        mkdir -p /overlay/upper/usr/bin
         for bin in "$extract_dir"/*; do
           [ -f "$bin" ] || continue
           bname=$(basename "$bin")
-          cp "$bin" "/usr/bin/$bname" && chmod +x "/usr/bin/$bname"
-          log "INFO: [dep] Installed binary: /usr/bin/$bname"
+          cp "$bin" "/overlay/upper/usr/bin/$bname" && chmod +x "/overlay/upper/usr/bin/$bname"
+          log "INFO: [dep] Installed binary (persistent): /overlay/upper/usr/bin/$bname"
         done
         rm -f "$tmp_zip"
         rm -rf "$extract_dir"
@@ -279,12 +287,14 @@ load_deps() {
 
     else
       # ── Single binary format ────────────────────────────────
-      dest_bin="/usr/bin/$dep_name"
+      dest_bin="/overlay/upper/usr/bin/$dep_name"
 
-      if [ -x "$dest_bin" ]; then
-        log "INFO: [dep] Binary already installed: $dest_bin, skipping download"
+      # Check both overlay upper and /usr/bin for existing installation
+      if [ -x "$dest_bin" ] || [ -x "/usr/bin/$dep_name" ]; then
+        log "INFO: [dep] Binary already installed: $dep_name, skipping download"
         continue
       fi
+      mkdir -p /overlay/upper/usr/bin
 
       bin_file="${dep_name}_${arch_tag}"
       download_url="$base_url/$bin_file"
@@ -295,7 +305,7 @@ load_deps() {
          && [ -s "$tmp_bin" ]; then
         cp "$tmp_bin" "$dest_bin" && chmod +x "$dest_bin"
         rm -f "$tmp_bin"
-        log "INFO: [dep] Installed binary: $dest_bin"
+        log "INFO: [dep] Installed binary (persistent): $dest_bin"
       else
         rm -f "$tmp_bin"
         log "WARN: [dep] Binary download failed for $dep_name v$pkg_version (release may not be published yet) - LuCI UI still works"
