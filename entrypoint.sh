@@ -43,10 +43,15 @@ log "INFO: Root password set"
 
 if ! command -v curl > /dev/null 2>&1; then
   log "INFO: First boot - installing packages..."
-  opkg update && opkg install curl luci-i18n-base-zh-cn
+  opkg update && opkg install curl unzip luci-i18n-base-zh-cn
   log "INFO: Packages installed"
 else
-  log "INFO: Packages already installed, skipping"
+  log "INFO: curl already installed, skipping base install"
+  # Ensure unzip is available even on subsequent boots (may have been missed on first install)
+  if ! command -v unzip > /dev/null 2>&1; then
+    log "INFO: Installing missing unzip..."
+    opkg install unzip 2>/dev/null && log "INFO: unzip installed" || log "WARN: unzip install failed"
+  fi
 fi
 
 # ─────────────────────────────────────────────────────────────
@@ -244,6 +249,12 @@ load_deps() {
       if [ "$already_installed" = "1" ]; then
         log "INFO: [dep] Binary already installed for $dep_name, skipping download"
         continue
+      fi
+
+      # Ensure unzip is available before attempting ZIP extraction
+      if ! command -v unzip >/dev/null 2>&1; then
+        log "INFO: [dep] unzip not found, installing..."
+        opkg install unzip >/dev/null 2>&1 && log "INFO: [dep] unzip installed" || log "WARN: [dep] unzip install failed"
       fi
 
       log "INFO: [dep] Downloading ZIP: $download_url"
