@@ -50,56 +50,67 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────
-# Auto-load LuCI plugins from /luci-plugins/**/luci-app-*
-# Structure expected per plugin:
-#   luasrc/controller/ → /usr/lib/lua/luci/controller/
-#   luasrc/view/       → /usr/lib/lua/luci/view/
-#   root/              → / (merged into rootfs)
+# Auto-load LuCI plugins from /luci-plugins/luci-app-*
+#
+# Supported plugin structures:
+# [Classic Lua]   luasrc/controller/ → /usr/lib/lua/luci/controller/
+#                 luasrc/view/       → /usr/lib/lua/luci/view/
+# [New JS LuCI]   htdocs/luci-static/resources/view/<name>/ → /www/luci-static/resources/view/<name>/
+# [Both]          root/              → / (merged into rootfs)
 # ─────────────────────────────────────────────────────────────
 load_plugins() {
-  mkdir -p /usr/lib/lua/luci/controller /usr/lib/lua/luci/view
+  mkdir -p /usr/lib/lua/luci/controller /usr/lib/lua/luci/view /www/luci-static/resources/view
 
   # Scan for luci-app-* directly under /luci-plugins/
   for plugin_dir in /luci-plugins/luci-app-*; do
     [ -d "$plugin_dir" ] || continue
     plugin_name=$(basename "$plugin_dir")
 
-    # Link luasrc/controller files
+    # ── Classic Lua: luasrc/controller/*.lua ──────────────────
     if [ -d "$plugin_dir/luasrc/controller" ]; then
       for f in "$plugin_dir/luasrc/controller"/*.lua; do
         [ -f "$f" ] || continue
         fname=$(basename "$f")
         if [ ! -e "/usr/lib/lua/luci/controller/$fname" ]; then
           ln -sf "$f" "/usr/lib/lua/luci/controller/$fname"
-          log "INFO: Linked controller: $fname ($plugin_name)"
+          log "INFO: [classic] controller: $fname ($plugin_name)"
         fi
       done
     fi
 
-    # Link luasrc/view subdirectory
+    # ── Classic Lua: luasrc/view/<subdir> ─────────────────────
     if [ -d "$plugin_dir/luasrc/view" ]; then
       for vdir in "$plugin_dir/luasrc/view"/*/; do
         [ -d "$vdir" ] || continue
         vname=$(basename "$vdir")
         if [ ! -e "/usr/lib/lua/luci/view/$vname" ]; then
           ln -sf "$vdir" "/usr/lib/lua/luci/view/$vname"
-          log "INFO: Linked view: $vname ($plugin_name)"
+          log "INFO: [classic] view dir: $vname ($plugin_name)"
         fi
       done
-      # Also link .htm files directly under view/
       for f in "$plugin_dir/luasrc/view"/*.htm; do
         [ -f "$f" ] || continue
         fname=$(basename "$f")
-        if [ ! -e "/usr/lib/lua/luci/view/$fname" ]; then
-          ln -sf "$f" "/usr/lib/lua/luci/view/$fname"
+        [ ! -e "/usr/lib/lua/luci/view/$fname" ] && ln -sf "$f" "/usr/lib/lua/luci/view/$fname"
+      done
+    fi
+
+    # ── New JS LuCI: htdocs/luci-static/resources/view/<name>/ ─
+    if [ -d "$plugin_dir/htdocs/luci-static/resources/view" ]; then
+      for vdir in "$plugin_dir/htdocs/luci-static/resources/view"/*/; do
+        [ -d "$vdir" ] || continue
+        vname=$(basename "$vdir")
+        if [ ! -e "/www/luci-static/resources/view/$vname" ]; then
+          ln -sf "$vdir" "/www/luci-static/resources/view/$vname"
+          log "INFO: [js] view: $vname ($plugin_name)"
         fi
       done
     fi
 
-    # Merge root/ into rootfs (cp -r, no overwrite)
+    # ── Merge root/ into rootfs (no overwrite) ────────────────
     if [ -d "$plugin_dir/root" ]; then
       cp -rn "$plugin_dir/root/." / 2>/dev/null
-      log "INFO: Merged root/: $plugin_name"
+      log "INFO: [root] merged: $plugin_name"
     fi
   done
   log "INFO: Plugin auto-load complete"
