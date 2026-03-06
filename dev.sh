@@ -6,7 +6,7 @@
 
 CONTAINER="openwrt-luci-devbox"
 PLUGINS_DIR="/luci-plugins"
-LOCAL_PLUGINS_DIR="/home/reyan/Projects/openwrt-luci-devbox/plugins"
+LOCAL_PLUGINS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/plugins"
 
 usage() {
   echo "用法: $0 [命令] [插件名]"
