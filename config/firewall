@@ -1,0 +1,77 @@
+
+config defaults
+	option syn_flood '1'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+
+config zone
+	option name 'lan'
+	list network 'lan'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'ACCEPT'
+
+config zone
+	option name 'wan'
+	list network 'wan'
+	list network 'wan_6'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option masq '1'
+	option mtu_fix '1'
+
+# WireGuard VPN 区域：独立 zone 便于插件测试 forward 规则
+config zone
+	option name 'vpn'
+	list network 'wg0'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'ACCEPT'
+
+config forwarding
+	option src 'lan'
+	option dest 'wan'
+
+# LAN <-> VPN 双向转发（供 WireGuard 伪装插件测试）
+config forwarding
+	option src 'lan'
+	option dest 'vpn'
+
+config forwarding
+	option src 'vpn'
+	option dest 'lan'
+
+config rule
+	option name 'Allow-DHCP-Renew'
+	option src 'wan'
+	option proto 'udp'
+	option dest_port '68'
+	option target 'ACCEPT'
+	option family 'ipv4'
+
+config rule
+	option name 'Allow-Ping'
+	option src 'wan'
+	option proto 'icmp'
+	option icmp_type 'echo-request'
+	option family 'ipv4'
+	option target 'ACCEPT'
+
+config rule
+	option name 'Allow-ICMPv6-Input'
+	option src 'wan'
+	option proto 'icmp'
+	option icmp_type 'echo-request echo-reply destination-unreachable packet-too-big time-exceeded bad-header unknown-header-type router-solicitation neighbour-solicitation router-advertisement neighbour-advertisement'
+	option limit '1000/sec'
+	option family 'ipv6'
+	option target 'ACCEPT'
+
+# 允许从 WAN 接入 WireGuard（UDP 51820）
+config rule
+	option name 'Allow-WireGuard'
+	option src 'wan'
+	option dest_port '51820'
+	option proto 'udp'
+	option target 'ACCEPT'
