@@ -2,7 +2,7 @@
 
 > 模拟 OpenWrt 环境的 LuCI 插件开发测试 Docker 沙盒
 
-![OpenWrt](https://img.shields.io/badge/OpenWrt-24.10.0-blue)
+![OpenWrt](https://img.shields.io/badge/OpenWrt-24.10.3-blue)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker)
 
 ---
@@ -283,7 +283,10 @@ cd plugins && git sparse-checkout set \
     luci-app-udp-tunnel udp2raw
 cd ..
 
-# 3. 启动容器
+# 3. 构建镜像（首次需下载 rootfs.tar.gz，约 5MB）
+docker compose build
+
+# 4. 启动容器
 docker compose up -d
 
 # 4. 等待就绪（首次约 2~3 分钟）
