@@ -20,12 +20,12 @@ echo "========================================================"
 # 配置 opkg 源（确保使用 24.10 稳定版仓库）
 # ----------------------------------------------------------------
 cat > /etc/opkg/distfeeds.conf << 'EOF'
-src/gz openwrt_core https://downloads.openwrt.org/releases/24.10.0/targets/x86/64/packages
-src/gz openwrt_base https://downloads.openwrt.org/releases/24.10.0/packages/x86_64/base
-src/gz openwrt_luci https://downloads.openwrt.org/releases/24.10.0/packages/x86_64/luci
-src/gz openwrt_packages https://downloads.openwrt.org/releases/24.10.0/packages/x86_64/packages
-src/gz openwrt_routing https://downloads.openwrt.org/releases/24.10.0/packages/x86_64/routing
-src/gz openwrt_telephony https://downloads.openwrt.org/releases/24.10.0/packages/x86_64/telephony
+src/gz openwrt_core https://downloads.openwrt.org/releases/24.10.3/targets/x86/64/packages
+src/gz openwrt_base https://downloads.openwrt.org/releases/24.10.3/packages/x86_64/base
+src/gz openwrt_luci https://downloads.openwrt.org/releases/24.10.3/packages/x86_64/luci
+src/gz openwrt_packages https://downloads.openwrt.org/releases/24.10.3/packages/x86_64/packages
+src/gz openwrt_routing https://downloads.openwrt.org/releases/24.10.3/packages/x86_64/routing
+src/gz openwrt_telephony https://downloads.openwrt.org/releases/24.10.3/packages/x86_64/telephony
 EOF
 
 echo "[init] 更新包列表..."
