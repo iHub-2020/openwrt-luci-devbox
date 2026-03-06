@@ -1,89 +1,85 @@
-version: "3.8"
-################################################################################
-# OpenWrt LuCI Development Environment Stack (Enterprise Edition)            #
-# Version: 1.0.0                                                             #
-# Project: OpenWrt LuCI Plugin Development Environment                       #
-# Image: openwrt/rootfs:x86_64-23.05.5                                       #
-# Date: 2025-02-26                                                           #
-# Features: Enterprise config + Health check + Resource limits               #
-################################################################################
-#                                                                            #
-# Core Features:                                                             #
-# - Image version locked (OpenWrt 23.05.5)                                   #
-# - privileged mode (iptables isolated in container)                         #
-# - Dev directory isolated (/home/reyan/Projects/openwrt-luci-devbox)        #
-# - Health check (wget detect uhttpd)                                        #
-# - Resource limits (prevent resource abuse)                                 #
-# - Bridge network mode (port mapping)                                       #
-# - Overlay persistence (keep installed packages)                            #
-#                                                                            #
-# Notes:                                                                     #
-# - privileged mode for iptables isolation (only inside container)           #
-# - Ports 8080(HTTP) 8443(HTTPS) 2222(SSH) need firewall open                #
-# - Dev files at /home/reyan/Projects/openwrt-luci-devbox/                   #
-# - Container config at /opt/openwrt-luci-devbox/                            #
-################################################################################
-
+# ==============================================================
+#  openwrt-luci-devbox — docker-compose.yml
+#  升级到 OpenWrt 24.10，支持 WireGuard + 网络层插件开发测试
+# ==============================================================
 services:
-  openwrt:
-    # Image version locked (OpenWrt 23.05.5 stable)
-    image: openwrt/rootfs:x86_64-23.05.5
+  openwrt-luci-devbox:
+    # ----------------------------------------------------------------
+    # 镜像：OpenWrt 官方 rootfs 24.10.0 稳定版
+    #   如果拉取失败（国内网络），可换：
+    #   - ghcr.io/openwrt/rootfs:x86-64-v24.10.0
+    #   - 或先 docker pull 再 tag
+    # ----------------------------------------------------------------
+    image: ghcr.io/openwrt/rootfs:x86-64-v24.10.0
     container_name: openwrt-luci-devbox
-    hostname: openwrt-luci-devbox
+    hostname: OpenWrt
     restart: unless-stopped
 
-    # Privileged mode (iptables isolated in container)
-    privileged: true
+    # ----------------------------------------------------------------
+    # 初始化脚本：容器首次启动时安装所有依赖
+    # ----------------------------------------------------------------
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
 
-    # Port mapping
+    # ----------------------------------------------------------------
+    # 网络层插件开发必须的权限和内核能力
+    #   NET_ADMIN  : ip link/route/rule、iptables、WireGuard 接口创建
+    #   NET_RAW    : raw socket，phantun/udp2raw 等工具需要
+    #   SYS_MODULE : 尝试加载内核模块（宿主机须支持 WireGuard）
+    # ----------------------------------------------------------------
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun   # tun/tap 设备，udp tunnel 类插件必须
+
+    # ----------------------------------------------------------------
+    # 内核参数：开启 IP 转发（路由器基本功能）
+    # ----------------------------------------------------------------
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
+      - net.ipv4.conf.all.src_valid_mark=1   # WireGuard routing mark
+
+    # ----------------------------------------------------------------
+    # 端口映射
+    # ----------------------------------------------------------------
     ports:
-      - "8080:80" # LuCI HTTP
-      - "8443:443" # LuCI HTTPS
-      - "2222:22" # SSH
+      - "8080:80"    # LuCI Web 界面
+      - "2222:22"    # SSH 调试
 
-    # Environment variables
-    environment:
-      - TZ=Asia/Shanghai
-
-    # Volume mounts
+    # ----------------------------------------------------------------
+    # 数据卷
+    #   plugins/      → 插件热加载目录（对应 openwrt-reyan_new 仓库）
+    #   opkg-cache/   → opkg 包缓存，避免每次重建都重新下载
+    # ----------------------------------------------------------------
     volumes:
-      # Entrypoint script (read-only)
-      - /opt/openwrt-luci-devbox/entrypoint.sh:/entrypoint.sh:ro
-      # LuCI plugins development directory
-      - /home/reyan/Projects/openwrt-luci-devbox/plugins:/luci-plugins
-      # IPK packages directory
-      - /home/reyan/Projects/openwrt-luci-devbox/packages:/packages
-      # Overlay persistence (keep installed packages)
-      - openwrt-overlay:/overlay
+      - ./plugins:/luci-plugins
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - ./docker-init.sh:/docker-init.sh:ro
+      - ./init-luci.sh:/init-luci.sh:ro
+      - ./config:/config-templates:ro
+      - opkg-cache:/var/opkg-lists
 
-    # Entrypoint config
-    entrypoint: [ "/bin/sh", "/entrypoint.sh" ]
+    # ----------------------------------------------------------------
+    # 环境变量：控制初始化行为
+    # ----------------------------------------------------------------
+    environment:
+      # 设为 1 可强制重新安装所有包（清除已安装标记）
+      - FORCE_REINIT=0
 
-    # Health check (detect uhttpd service)
+    # ----------------------------------------------------------------
+    # 健康检查：确认 uhttpd 正常响应
+    # ----------------------------------------------------------------
     healthcheck:
-      test: [ "CMD-SHELL", "wget -q -O /dev/null http://localhost/ || exit 1" ]
+      test: ["CMD-SHELL", "curl -sf http://localhost/cgi-bin/luci/ > /dev/null || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 60s
+      retries: 5
+      start_period: 120s   # 首次安装依赖需要更长时间
 
-    # Resource limits (prevent single container from using too many resources)
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 256M
-
-    # Labels
-    labels:
-      - "com.openwrt.role=luci-dev"
-      - "com.openwrt.project=luci-plugin-dev"
-      - "com.openwrt.version=1.0.0"
-
-# Named volumes
+# ----------------------------------------------------------------
+# 持久化 opkg 缓存（跨容器重启保留，加速二次启动）
+# ----------------------------------------------------------------
 volumes:
-  openwrt-overlay:
-    name: openwrt-overlay
+  opkg-cache:
