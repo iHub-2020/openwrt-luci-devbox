@@ -1,6 +1,6 @@
 
 config core 'main'
-	option lang 'auto'
+	option lang 'zh_cn'
 	option mediaurlbase '/luci-static/bootstrap'
 	option resourcebase '/luci-static/resources'
 	option ubuspath '/ubus/'
@@ -10,18 +10,21 @@ config extern 'flash_keep'
 	option dropbear '/etc/dropbear/'
 	option openvpn '/etc/openvpn/'
 	option passwd '/etc/passwd'
+	option shadow '/etc/shadow'
+	option group '/etc/group'
 	option opkg '/etc/opkg.conf'
+	option uhttpd '/etc/uhttpd.conf'
 	option firewall '/etc/firewall.user'
-	option uploads '/lib/uci/upload/'
+
+# 开发模式：关闭代码缓存，修改 Lua 文件后刷新浏览器直接生效
+config internal 'ccache'
+	option enable '0'
 
 config internal 'languages'
 
 config internal 'sauth'
 	option sessionpath '/tmp/luci-sessions'
 	option sessiontime '3600'
-
-config internal 'ccache'
-	option enable '1'
 
 config internal 'themes'
 	option Bootstrap '/luci-static/bootstrap'
