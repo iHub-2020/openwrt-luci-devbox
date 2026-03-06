@@ -8,19 +8,24 @@
 #    ✅ poweroffdevice、状态类、系统管理类插件
 #    ❌ 不适合 phantun/udp2raw 等需要真实流量对打的场景
 #       → 请改用 docker-compose.dual.yml
+#
+#  首次启动会自动构建镜像（从官方下载 rootfs.tar.gz，约 5MB）
+#  构建完成后镜像缓存在本地，后续启动无需重新构建
 # ==============================================================
 
 services:
   openwrt-luci-devbox:
-    image: ghcr.io/openwrt/rootfs:x86-64-v24.10.0
+    # 使用本地 Dockerfile 构建，版本锁定为 OpenWrt 24.10.3
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openwrt-luci-devbox:24.10.3   # 构建后的本地镜像名
     container_name: openwrt-luci-devbox
     hostname: OpenWrt
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
 
-    # ----------------------------------------------------------------
     # 网络模式：bridge（容器独立命名空间，NET_ADMIN 不影响宿主机）
-    # ----------------------------------------------------------------
     network_mode: bridge
 
     cap_drop:
