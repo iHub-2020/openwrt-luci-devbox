@@ -35,7 +35,6 @@
 # ==============================================================
 
 networks:
-  # ── 容器间通讯的内部网络（完全隔离，不路由到宿主机外部）──
   devnet:
     driver: bridge
     ipam:
@@ -47,11 +46,12 @@ volumes:
   opkg-cache-server:
   opkg-cache-peer:
 
-# ================================================================
-#  公共配置（YAML anchor，避免重复）
-# ================================================================
+# 公共配置（YAML anchor）
 x-openwrt-common: &openwrt-common
-  image: ghcr.io/openwrt/rootfs:x86-64-v24.10.0
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: openwrt-luci-devbox:24.10.3
   restart: unless-stopped
   entrypoint: ["/bin/sh", "/entrypoint.sh"]
   cap_drop:
@@ -65,48 +65,36 @@ x-openwrt-common: &openwrt-common
     - net.ipv4.ip_forward=1
     - net.ipv6.conf.all.forwarding=1
     - net.ipv4.conf.all.src_valid_mark=1
-  networks:
-    - devnet
   volumes:
     - ./entrypoint.sh:/entrypoint.sh:ro
     - ./docker-init.sh:/docker-init.sh:ro
     - ./init-luci.sh:/init-luci.sh:ro
     - ./config:/config-templates:ro
 
-# ================================================================
-#  服务定义
-# ================================================================
 services:
 
-  # ── 服务端容器（你的开发主力，扮演路由器）──────────────────────
   openwrt-server:
     <<: *openwrt-common
     container_name: openwrt-server
     hostname: OpenWrt-Server
-
     networks:
       devnet:
-        ipv4_address: 172.30.0.10   # 固定 IP，对端可直接引用
-
+        ipv4_address: 172.30.0.10
     ports:
-      - "127.0.0.1:8080:80"         # LuCI Web
-      - "127.0.0.1:2222:22"         # SSH
-
+      - "127.0.0.1:8080:80"
+      - "127.0.0.1:2222:22"
     volumes:
-      - ./plugins:/luci-plugins      # 插件热加载
+      - ./plugins:/luci-plugins
       - ./entrypoint.sh:/entrypoint.sh:ro
       - ./docker-init.sh:/docker-init.sh:ro
       - ./init-luci.sh:/init-luci.sh:ro
       - ./config:/config-templates:ro
       - opkg-cache-server:/var/opkg-lists
-
     environment:
       - FORCE_REINIT=0
-      # 告知 entrypoint：本容器角色为 server，wg0 用 .1 地址
       - DEVBOX_ROLE=server
       - WG_ADDR=10.10.58.1/24
       - WG_LISTEN_PORT=51820
-
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://127.0.0.1/cgi-bin/luci/ > /dev/null || exit 1"]
       interval: 30s
@@ -114,37 +102,27 @@ services:
       retries: 5
       start_period: 120s
 
-  # ── 对端容器（扮演客户端/远端节点，用于流量对打）──────────────
   openwrt-peer:
     <<: *openwrt-common
     container_name: openwrt-peer
     hostname: OpenWrt-Peer
-
     networks:
       devnet:
-        ipv4_address: 172.30.0.20   # 固定 IP，server 可直接引用
-
+        ipv4_address: 172.30.0.20
     ports:
-      - "127.0.0.1:2223:22"         # SSH（与 server 的 2222 错开）
-      # peer 不需要 LuCI Web，只做流量对端
-
+      - "127.0.0.1:2223:22"
     volumes:
       - ./entrypoint.sh:/entrypoint.sh:ro
       - ./docker-init.sh:/docker-init.sh:ro
       - ./init-luci.sh:/init-luci.sh:ro
       - ./config:/config-templates:ro
       - opkg-cache-peer:/var/opkg-lists
-
     environment:
       - FORCE_REINIT=0
-      # 告知 entrypoint：本容器角色为 peer，wg0 用 .2 地址
       - DEVBOX_ROLE=peer
       - WG_ADDR=10.10.58.2/24
-      # peer 主动连接 server，server IP 固定为 172.30.0.10
       - WG_SERVER_IP=172.30.0.10
       - WG_LISTEN_PORT=51820
-
-    # peer 启动依赖 server 就绪
     depends_on:
       openwrt-server:
         condition: service_healthy
