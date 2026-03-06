@@ -1,58 +1,65 @@
 # ==============================================================
 #  openwrt-luci-devbox — docker-compose.yml
-#  升级到 OpenWrt 24.10，支持 WireGuard + 网络层插件开发测试
+#  OpenWrt 24.10 + WireGuard + 网络层插件开发环境
+#
+#  【网络安全说明】
+#  ---------------------------------------------------------------
+#  NET_ADMIN 权限仅作用于容器自己的网络命名空间（network namespace），
+#  不会影响宿主机的路由表、iptables 规则、物理网络接口。
+#  只要不使用 network_mode: host，容器的网络操作完全隔离。
+#
+#  ❌ 已移除 SYS_MODULE：该能力允许加载内核模块，会影响宿主机内核，危险。
+#     WireGuard 内核模块应由宿主机系统预装；容器内检测到模块可用时直接使用，
+#     检测不到时自动回退为 dummy 接口（UI 和 LuCI 测试不受影响）。
 # ==============================================================
+
 services:
   openwrt-luci-devbox:
-    # ----------------------------------------------------------------
-    # 镜像：OpenWrt 官方 rootfs 24.10.0 稳定版
-    #   如果拉取失败（国内网络），可换：
-    #   - ghcr.io/openwrt/rootfs:x86-64-v24.10.0
-    #   - 或先 docker pull 再 tag
-    # ----------------------------------------------------------------
     image: ghcr.io/openwrt/rootfs:x86-64-v24.10.0
     container_name: openwrt-luci-devbox
     hostname: OpenWrt
     restart: unless-stopped
-
-    # ----------------------------------------------------------------
-    # 初始化脚本：容器首次启动时安装所有依赖
-    # ----------------------------------------------------------------
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
 
     # ----------------------------------------------------------------
-    # 网络层插件开发必须的权限和内核能力
-    #   NET_ADMIN  : ip link/route/rule、iptables、WireGuard 接口创建
-    #   NET_RAW    : raw socket，phantun/udp2raw 等工具需要
-    #   SYS_MODULE : 尝试加载内核模块（宿主机须支持 WireGuard）
+    # 网络模式：显式声明 bridge（Docker 默认模式）
+    #   ⚠️  永远不要改成 network_mode: host，否则容器直接共享宿主机
+    #       网络命名空间，ip/iptables 命令会真实影响宿主机！
     # ----------------------------------------------------------------
+    network_mode: bridge
+
+    # ----------------------------------------------------------------
+    # 最小权限原则：
+    #   cap_drop: ALL       先撤销全部默认能力
+    #   cap_add 只补回必须的两个：
+    #     NET_ADMIN  → 容器自己命名空间内的网络管理（ip/iptables/wg）
+    #     NET_RAW    → raw socket，phantun / udp2raw 类工具必须
+    # ----------------------------------------------------------------
+    cap_drop:
+      - ALL
     cap_add:
       - NET_ADMIN
       - NET_RAW
-      - SYS_MODULE
+
+    # TUN 设备：phantun / udp2raw / udp-speeder 等必须
     devices:
-      - /dev/net/tun   # tun/tap 设备，udp tunnel 类插件必须
+      - /dev/net/tun
 
     # ----------------------------------------------------------------
-    # 内核参数：开启 IP 转发（路由器基本功能）
+    # sysctl 仅在容器命名空间内生效，不影响宿主机
     # ----------------------------------------------------------------
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv6.conf.all.forwarding=1
-      - net.ipv4.conf.all.src_valid_mark=1   # WireGuard routing mark
+      - net.ipv4.conf.all.src_valid_mark=1   # WireGuard policy routing
 
     # ----------------------------------------------------------------
-    # 端口映射
+    # 端口绑定到 127.0.0.1：只允许本机访问，局域网其他设备无法直接碰到容器
     # ----------------------------------------------------------------
     ports:
-      - "8080:80"    # LuCI Web 界面
-      - "2222:22"    # SSH 调试
+      - "127.0.0.1:8080:80"    # LuCI Web
+      - "127.0.0.1:2222:22"    # SSH 调试
 
-    # ----------------------------------------------------------------
-    # 数据卷
-    #   plugins/      → 插件热加载目录（对应 openwrt-reyan_new 仓库）
-    #   opkg-cache/   → opkg 包缓存，避免每次重建都重新下载
-    # ----------------------------------------------------------------
     volumes:
       - ./plugins:/luci-plugins
       - ./entrypoint.sh:/entrypoint.sh:ro
@@ -61,25 +68,15 @@ services:
       - ./config:/config-templates:ro
       - opkg-cache:/var/opkg-lists
 
-    # ----------------------------------------------------------------
-    # 环境变量：控制初始化行为
-    # ----------------------------------------------------------------
     environment:
-      # 设为 1 可强制重新安装所有包（清除已安装标记）
-      - FORCE_REINIT=0
+      - FORCE_REINIT=0    # 设为 1 强制重新安装所有包
 
-    # ----------------------------------------------------------------
-    # 健康检查：确认 uhttpd 正常响应
-    # ----------------------------------------------------------------
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost/cgi-bin/luci/ > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1/cgi-bin/luci/ > /dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s   # 首次安装依赖需要更长时间
+      start_period: 120s
 
-# ----------------------------------------------------------------
-# 持久化 opkg 缓存（跨容器重启保留，加速二次启动）
-# ----------------------------------------------------------------
 volumes:
   opkg-cache:
