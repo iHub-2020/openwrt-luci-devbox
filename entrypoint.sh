@@ -1,245 +1,217 @@
 #!/bin/sh
 # ==============================================================
 #  entrypoint.sh — 容器启动入口
-#  1. 首次运行时调用 docker-init.sh 安装依赖
-#  2. 创建模拟网络接口（与真实路由器拓扑一致）
-#  3. 配置 UCI 网络（lan / wan / wan_6 / wg0）
-#  4. 自动加载 /luci-plugins/luci-app-* 下的所有插件
-#  5. 启动 uhttpd / sshd / rpcd 等服务
+#
+#  支持两种运行模式（由环境变量 DEVBOX_ROLE 区分）：
+#    server（默认）：路由器/服务端角色，启动 LuCI + SSH
+#    peer           ：对端/客户端角色，只启动 SSH，用于流量对打
+#
+#  环境变量：
+#    DEVBOX_ROLE      = server | peer   （默认 server）
+#    WG_ADDR          = 10.10.58.1/24   （wg0 地址）
+#    WG_LISTEN_PORT   = 51820
+#    WG_SERVER_IP     = 172.30.0.10     （peer 模式下 server 的 IP）
+#    FORCE_REINIT     = 0 | 1
 # ==============================================================
 
 set -e
 
+ROLE="${DEVBOX_ROLE:-server}"
+WG_ADDR="${WG_ADDR:-10.10.58.1/24}"
+WG_LISTEN_PORT="${WG_LISTEN_PORT:-51820}"
+
 echo "========================================================"
-echo " OpenWrt LuCI DevBox — 启动中"
+echo " OpenWrt LuCI DevBox — 启动中 [角色: $ROLE]"
 echo "========================================================"
 
 # ================================================================
-# 1. 首次初始化（安装包）
+# 1. 首次初始化（安装 opkg 包）
 # ================================================================
 mkdir -p /var/lock /var/run /var/log /tmp/run
 /bin/sh /docker-init.sh
 
 # ================================================================
-# 2. 模拟网络接口
-#    目标：在容器内创建与截图中真实路由器一致的接口结构
-#      - br-lan  (网桥，静态地址，对应 LAN)
-#      - eth0    (已由 Docker 提供，作为 br-lan 成员或独立使用)
-#      - pppoe-wan (隧道设备，模拟 PPPoE WAN)
-#      - wg0     (WireGuard VPN，10.10.58.1/24)
-#      - utun    (TUN 设备，供 phantun/udp2raw 等使用)
+# 2. 写入 UCI 配置模板（从挂载的 /config-templates/ 复制）
 # ================================================================
-
-echo "[net] 创建模拟网络接口..."
-
-# ── 加载必要内核模块（如果宿主机支持）──
-modprobe wireguard 2>/dev/null && echo "[net] ✅ WireGuard 内核模块已加载" \
-    || echo "[net] ⚠️  WireGuard 内核模块不可用（宿主机不支持），wg0 将用 dummy 替代"
-modprobe tun 2>/dev/null && echo "[net] ✅ TUN 模块已加载" || true
-modprobe dummy 2>/dev/null && echo "[net] ✅ dummy 模块已加载" || true
-
-# ── 创建 br-lan（网桥）──
-if ! ip link show br-lan > /dev/null 2>&1; then
-    ip link add name br-lan type bridge 2>/dev/null \
-        && echo "[net] 创建 br-lan (bridge)" \
-        || echo "[net] br-lan 创建失败，跳过"
+if [ -d /config-templates ]; then
+    for f in /config-templates/*; do
+        fname=$(basename "$f")
+        # init-firewall 是脚本，不是 UCI 配置，单独处理
+        [ "$fname" = "init-firewall" ] && continue
+        cp "$f" "/etc/config/$fname" 2>/dev/null && \
+            echo "[config] 写入 /etc/config/$fname" || true
+    done
 fi
-ip link set br-lan up 2>/dev/null || true
-ip addr add 192.168.1.1/24 dev br-lan 2>/dev/null || true
 
-# ── 创建 wg0（WireGuard，10.10.58.1/24）──
-if ! ip link show wg0 > /dev/null 2>&1; then
-    # 优先尝试 wireguard 类型
-    if ip link add dev wg0 type wireguard 2>/dev/null; then
-        echo "[net] ✅ 创建 wg0 (wireguard)"
-    else
-        # 回退：用 dummy 设备模拟接口（UI 展示不受影响）
-        ip link add dev wg0 type dummy 2>/dev/null \
-            && echo "[net] ⚠️  wg0 用 dummy 类型替代（WireGuard 模块不可用）" \
-            || echo "[net] wg0 创建失败，跳过"
+# ================================================================
+# 3. 创建模拟网络接口
+# ================================================================
+echo "[net] 创建模拟网络接口（角色：$ROLE）..."
+
+# 加载内核模块（由宿主机提供，失败不阻断启动）
+modprobe wireguard 2>/dev/null && echo "[net] ✅ WireGuard 内核模块已加载" \
+    || echo "[net] ⚠️  WireGuard 模块不可用，wg0 将用 dummy 替代"
+modprobe tun   2>/dev/null || true
+modprobe dummy 2>/dev/null || true
+
+# ── br-lan（server 模式才需要）──
+if [ "$ROLE" = "server" ]; then
+    if ! ip link show br-lan > /dev/null 2>&1; then
+        ip link add name br-lan type bridge 2>/dev/null || true
     fi
+    ip link set br-lan up 2>/dev/null || true
+    ip addr add 192.168.1.1/24 dev br-lan 2>/dev/null || true
+fi
+
+# ── wg0（两种角色都需要，地址由环境变量决定）──
+if ! ip link show wg0 > /dev/null 2>&1; then
+    ip link add dev wg0 type wireguard 2>/dev/null \
+        || ip link add dev wg0 type dummy 2>/dev/null || true
 fi
 ip link set wg0 up 2>/dev/null || true
-ip addr add 10.10.58.1/24 dev wg0 2>/dev/null || true
+ip addr add "$WG_ADDR" dev wg0 2>/dev/null || true
 
-# ── 创建 pppoe-wan（dummy 模拟 PPPoE 隧道接口）──
-if ! ip link show pppoe-wan > /dev/null 2>&1; then
-    ip link add dev pppoe-wan type dummy 2>/dev/null \
-        && echo "[net] 创建 pppoe-wan (dummy)" \
-        || echo "[net] pppoe-wan 创建失败，跳过"
+# ── pppoe-wan（只有 server 模式需要模拟 WAN）──
+if [ "$ROLE" = "server" ]; then
+    if ! ip link show pppoe-wan > /dev/null 2>&1; then
+        ip link add dev pppoe-wan type dummy 2>/dev/null || true
+    fi
+    ip link set pppoe-wan up 2>/dev/null || true
 fi
-ip link set pppoe-wan up 2>/dev/null || true
 
-# ── 创建 utun（TUN 设备，供 phantun 等使用）──
+# ── utun（两种角色都需要，phantun/udp2raw 使用）──
 if ! ip link show utun > /dev/null 2>&1; then
-    ip tuntap add dev utun mode tun 2>/dev/null \
-        && echo "[net] 创建 utun (tun)" \
-        || echo "[net] utun 创建失败，跳过"
+    ip tuntap add dev utun mode tun 2>/dev/null || true
 fi
 ip link set utun up 2>/dev/null || true
 
 # ================================================================
-# 3. 配置 UCI 网络接口定义
-#    让 LuCI 能正确识别和展示接口（与真实路由器截图一致）
+# 4. 写入 UCI 网络配置（覆盖模板中的占位符）
 # ================================================================
-
 echo "[uci] 配置网络接口..."
 
-# ── LAN ──
-uci -q set network.lan=interface
-uci set network.lan.proto='static'
-uci set network.lan.device='br-lan'
-uci set network.lan.ipaddr='192.168.1.1'
-uci set network.lan.netmask='255.255.255.0'
+if [ "$ROLE" = "server" ]; then
+    uci -q set network.lan=interface
+    uci set network.lan.proto='static'
+    uci set network.lan.device='br-lan'
+    uci set network.lan.ipaddr='192.168.1.1'
+    uci set network.lan.netmask='255.255.255.0'
 
-# ── WAN（PPPoE 模拟）──
-uci -q set network.wan=interface
-uci set network.wan.proto='pppoe'
-uci set network.wan.device='eth0'
-# 模拟 PPPoE 拨号参数（不会真实拨号，仅供 UI 展示）
-uci set network.wan.username='test@isp.example'
-uci set network.wan.password='testpassword'
+    uci -q set network.wan=interface
+    uci set network.wan.proto='pppoe'
+    uci set network.wan.device='eth0'
+    uci set network.wan.username='test@isp.example'
+    uci set network.wan.password='testpassword'
 
-# ── WAN6（虚拟 DHCPv6 客户端）──
-uci -q set network.wan_6=interface
-uci set network.wan_6.proto='dhcpv6'
-uci set network.wan_6.device='@wan'
+    uci -q set network.wan_6=interface
+    uci set network.wan_6.proto='dhcpv6'
+    uci set network.wan_6.device='@wan'
+fi
 
-# ── WireGuard VPN 接口 ──
+# wg0 两个角色都配置
+WG_PRIVKEY=$(wg genkey 2>/dev/null || echo "PLACEHOLDER_KEY=")
 uci -q set network.wg0=interface
 uci set network.wg0.proto='wireguard'
-uci set network.wg0.private_key="$(wg genkey 2>/dev/null || echo 'PLACEHOLDER_PRIVATE_KEY_BASE64=')"
-uci set network.wg0.listen_port='51820'
-uci add_list network.wg0.addresses='10.10.58.1/24'
-
-# ── loopback ──
-uci -q set network.loopback=interface
-uci set network.loopback.proto='static'
-uci set network.loopback.device='lo'
-uci set network.loopback.ipaddr='127.0.0.1'
-uci set network.loopback.netmask='255.0.0.0'
+uci set network.wg0.private_key="$WG_PRIVKEY"
+uci set network.wg0.listen_port="$WG_LISTEN_PORT"
+uci -q del network.wg0.addresses 2>/dev/null || true
+uci add_list network.wg0.addresses="$WG_ADDR"
 
 uci commit network
-echo "[uci] ✅ UCI 网络配置已写入"
+echo "[uci] ✅ UCI 网络配置完成"
 
 # ================================================================
-# 4. 自动加载插件
-#    扫描 /luci-plugins/luci-app-* 并创建符号链接
+# 5. 应用额外防火墙规则
 # ================================================================
-
-echo "[plugin] 扫描并加载插件..."
-
-PLUGIN_ROOT="/luci-plugins"
-LUCI_CTRL="/usr/lib/lua/luci/controller"
-LUCI_VIEW="/usr/lib/lua/luci/view"
-LUCI_MODEL="/usr/lib/lua/luci/model/cbi"
-
-mkdir -p "$LUCI_CTRL" "$LUCI_VIEW" "$LUCI_MODEL"
-
-for plugin_dir in "$PLUGIN_ROOT"/luci-app-*/; do
-    [ -d "$plugin_dir" ] || continue
-    plugin_name=$(basename "$plugin_dir")
-    echo "[plugin] 加载 $plugin_name"
-
-    # Controller 文件
-    if [ -d "$plugin_dir/luasrc/controller" ]; then
-        for f in "$plugin_dir/luasrc/controller/"*.lua; do
-            [ -f "$f" ] || continue
-            fname=$(basename "$f")
-            target="$LUCI_CTRL/$fname"
-            [ -L "$target" ] || ln -sf "$f" "$target"
-        done
-    fi
-
-    # View 目录
-    if [ -d "$plugin_dir/luasrc/view" ]; then
-        for d in "$plugin_dir/luasrc/view/"/*/; do
-            [ -d "$d" ] || continue
-            dname=$(basename "$d")
-            target="$LUCI_VIEW/$dname"
-            [ -L "$target" ] || ln -sf "$d" "$target"
-        done
-        # 直接在 view 根下的 .htm 文件
-        for f in "$plugin_dir/luasrc/view/"*.htm; do
-            [ -f "$f" ] || continue
-            fname=$(basename "$f")
-            target="$LUCI_VIEW/$fname"
-            [ -L "$target" ] || ln -sf "$f" "$target"
-        done
-    fi
-
-    # Model/CBI 文件
-    if [ -d "$plugin_dir/luasrc/model/cbi" ]; then
-        for f in "$plugin_dir/luasrc/model/cbi/"*.lua; do
-            [ -f "$f" ] || continue
-            fname=$(basename "$f")
-            target="$LUCI_MODEL/$fname"
-            [ -L "$target" ] || ln -sf "$f" "$target"
-        done
-    fi
-
-    # root/ 目录覆盖（系统配置文件、init.d 脚本等）
-    if [ -d "$plugin_dir/root" ]; then
-        cp -rl "$plugin_dir/root/." / 2>/dev/null || \
-        cp -r  "$plugin_dir/root/." / 2>/dev/null || true
-    fi
-
-    # 如果插件有 init.d 脚本，注册启动
-    if [ -d "$plugin_dir/root/etc/init.d" ]; then
-        for initf in "$plugin_dir/root/etc/init.d/"*; do
-            [ -f "$initf" ] || continue
-            svc=$(basename "$initf")
-            chmod +x "/etc/init.d/$svc" 2>/dev/null || true
-        done
-    fi
-done
-
-echo "[plugin] ✅ 插件加载完毕"
+if [ -f /config-templates/init-firewall ]; then
+    sh /config-templates/init-firewall 2>/dev/null || true
+fi
 
 # ================================================================
-# 5. 启动系统服务
+# 6. 加载插件（仅 server 模式）
 # ================================================================
+if [ "$ROLE" = "server" ]; then
+    echo "[plugin] 扫描并加载插件..."
 
+    PLUGIN_ROOT="/luci-plugins"
+    LUCI_CTRL="/usr/lib/lua/luci/controller"
+    LUCI_VIEW="/usr/lib/lua/luci/view"
+    LUCI_MODEL="/usr/lib/lua/luci/model/cbi"
+    mkdir -p "$LUCI_CTRL" "$LUCI_VIEW" "$LUCI_MODEL"
+
+    for plugin_dir in "$PLUGIN_ROOT"/luci-app-*/; do
+        [ -d "$plugin_dir" ] || continue
+        plugin_name=$(basename "$plugin_dir")
+        echo "[plugin] 加载 $plugin_name"
+
+        if [ -d "$plugin_dir/luasrc/controller" ]; then
+            for f in "$plugin_dir/luasrc/controller/"*.lua; do
+                [ -f "$f" ] || continue
+                ln -sf "$f" "$LUCI_CTRL/$(basename "$f")" 2>/dev/null || true
+            done
+        fi
+
+        if [ -d "$plugin_dir/luasrc/view" ]; then
+            for d in "$plugin_dir/luasrc/view/"/*/; do
+                [ -d "$d" ] || continue
+                ln -sf "$d" "$LUCI_VIEW/$(basename "$d")" 2>/dev/null || true
+            done
+        fi
+
+        if [ -d "$plugin_dir/luasrc/model/cbi" ]; then
+            for f in "$plugin_dir/luasrc/model/cbi/"*.lua; do
+                [ -f "$f" ] || continue
+                ln -sf "$f" "$LUCI_MODEL/$(basename "$f")" 2>/dev/null || true
+            done
+        fi
+
+        if [ -d "$plugin_dir/root" ]; then
+            cp -r "$plugin_dir/root/." / 2>/dev/null || true
+        fi
+    done
+    echo "[plugin] ✅ 插件加载完毕"
+fi
+
+# ================================================================
+# 7. 启动系统服务
+# ================================================================
 echo "[service] 启动服务..."
 
-# rpcd（LuCI 后端 RPC 守护进程）
-if [ -x /sbin/rpcd ] || [ -x /usr/sbin/rpcd ]; then
-    rpcd -s /var/run/ubus.sock &
-    sleep 1
-fi
-
 # ubusd
-if [ -x /sbin/ubusd ]; then
-    ubusd &
-    sleep 1
-fi
+[ -x /sbin/ubusd ] && { ubusd & sleep 1; }
 
-# netifd（网络接口守护进程，让 UCI 生效）
-if [ -x /sbin/netifd ]; then
-    /sbin/netifd &
-    sleep 2
-fi
+# rpcd
+[ -x /sbin/rpcd ] || [ -x /usr/sbin/rpcd ] && { rpcd -s /var/run/ubus.sock & sleep 1; }
 
-# SSH（守护进程模式）
+# netifd
+[ -x /sbin/netifd ] && { /sbin/netifd & sleep 2; }
+
+# SSH（两种角色都启动，方便进容器调试）
 if [ -x /usr/sbin/sshd ]; then
     mkdir -p /var/run/sshd
-    # 生成宿主密钥（如果不存在）
     [ -f /etc/ssh/ssh_host_rsa_key ] || ssh-keygen -A 2>/dev/null || true
     /usr/sbin/sshd &
-    echo "[service] ✅ sshd 已启动（端口 22 → 宿主机 2222）"
+    echo "[service] ✅ sshd 已启动"
 fi
 
-# uhttpd（LuCI Web 服务器，前台运行保持容器存活）
-echo "[service] 启动 uhttpd（LuCI Web 端口 80 → 宿主机 8080）..."
-echo "[service] ✅ LuCI 就绪 → http://localhost:8080  (root/password)"
-echo "========================================================"
-
-exec /usr/sbin/uhttpd -f \
-    -h /www \
-    -l 0.0.0.0:80 \
-    -L /usr/share/uhttpd/lua.sh \
-    -u /ubus \
-    -x /cgi-bin \
-    -t 60 \
-    -T 30 \
-    2>&1
+# ================================================================
+# 8. 根据角色决定前台进程
+# ================================================================
+if [ "$ROLE" = "server" ]; then
+    echo "[service] 启动 uhttpd（LuCI Web → http://localhost:8080）..."
+    echo "[service] ✅ 就绪 (root/password)"
+    echo "========================================================"
+    exec /usr/sbin/uhttpd -f \
+        -h /www \
+        -l 0.0.0.0:80 \
+        -L /usr/share/uhttpd/lua.sh \
+        -u /ubus \
+        -x /cgi-bin \
+        -t 60 -T 30 2>&1
+else
+    # peer 模式：没有 LuCI，用 tail 保持容器存活
+    echo "[service] peer 容器就绪（无 LuCI，仅 SSH 端口 2223）"
+    echo "[service] 进入对端调试：docker exec -it openwrt-peer /bin/ash"
+    echo "========================================================"
+    exec tail -f /dev/null
+fi
