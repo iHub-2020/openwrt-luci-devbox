@@ -1,379 +1,245 @@
 #!/bin/sh
-# OpenWrt Docker Entrypoint
+# ==============================================================
+#  entrypoint.sh — 容器启动入口
+#  1. 首次运行时调用 docker-init.sh 安装依赖
+#  2. 创建模拟网络接口（与真实路由器拓扑一致）
+#  3. 配置 UCI 网络（lan / wan / wan_6 / wg0）
+#  4. 自动加载 /luci-plugins/luci-app-* 下的所有插件
+#  5. 启动 uhttpd / sshd / rpcd 等服务
+# ==============================================================
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"; }
+set -e
 
-log "INFO: Starting OpenWrt container..."
-mount -o remount,rw / 2>/dev/null
-mkdir -p /var/lock /var/run /tmp
+echo "========================================================"
+echo " OpenWrt LuCI DevBox — 启动中"
+echo "========================================================"
 
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
-echo "nameserver 8.8.4.4" >> /etc/resolv.conf
-log "INFO: DNS configured"
+# ================================================================
+# 1. 首次初始化（安装包）
+# ================================================================
+mkdir -p /var/lock /var/run /var/log /tmp/run
+/bin/sh /docker-init.sh
 
-DOCKER_IP=$(ip -4 addr show eth0 2>/dev/null | grep inet | awk '{print $2}')
-DOCKER_GW=$(ip route | grep default | awk '{print $3}')
-IP_ADDR="${DOCKER_IP%%/*}"
-log "INFO: IP=$IP_ADDR GW=$DOCKER_GW"
+# ================================================================
+# 2. 模拟网络接口
+#    目标：在容器内创建与截图中真实路由器一致的接口结构
+#      - br-lan  (网桥，静态地址，对应 LAN)
+#      - eth0    (已由 Docker 提供，作为 br-lan 成员或独立使用)
+#      - pppoe-wan (隧道设备，模拟 PPPoE WAN)
+#      - wg0     (WireGuard VPN，10.10.58.1/24)
+#      - utun    (TUN 设备，供 phantun/udp2raw 等使用)
+# ================================================================
 
-cat > /etc/config/network << NETEOF
-config interface 'loopback'
-option device 'lo'
-option proto 'static'
-option ipaddr '127.0.0.1'
-option netmask '255.0.0.0'
-config interface 'lan'
-option device 'eth0'
-option proto 'static'
-option ipaddr '$IP_ADDR'
-option netmask '255.255.0.0'
-option gateway '$DOCKER_GW'
-NETEOF
-log "INFO: Network configured"
+echo "[net] 创建模拟网络接口..."
 
-: > /etc/config/firewall
-/etc/init.d/firewall stop 2>/dev/null
-/etc/init.d/firewall disable 2>/dev/null
-/etc/init.d/dnsmasq stop 2>/dev/null
-/etc/init.d/dnsmasq disable 2>/dev/null
-log "INFO: Firewall/dnsmasq disabled"
+# ── 加载必要内核模块（如果宿主机支持）──
+modprobe wireguard 2>/dev/null && echo "[net] ✅ WireGuard 内核模块已加载" \
+    || echo "[net] ⚠️  WireGuard 内核模块不可用（宿主机不支持），wg0 将用 dummy 替代"
+modprobe tun 2>/dev/null && echo "[net] ✅ TUN 模块已加载" || true
+modprobe dummy 2>/dev/null && echo "[net] ✅ dummy 模块已加载" || true
 
-echo "root:password" | chpasswd 2>/dev/null
-log "INFO: Root password set"
-
-if ! command -v curl > /dev/null 2>&1; then
-  log "INFO: First boot - installing packages..."
-  opkg update && opkg install curl unzip luci-i18n-base-zh-cn
-  log "INFO: Packages installed"
-else
-  log "INFO: curl already installed, skipping base install"
-  # Ensure unzip is available even on subsequent boots (may have been missed on first install)
-  if ! command -v unzip > /dev/null 2>&1; then
-    log "INFO: Installing missing unzip..."
-    opkg install unzip 2>/dev/null && log "INFO: unzip installed" || log "WARN: unzip install failed"
-  fi
+# ── 创建 br-lan（网桥）──
+if ! ip link show br-lan > /dev/null 2>&1; then
+    ip link add name br-lan type bridge 2>/dev/null \
+        && echo "[net] 创建 br-lan (bridge)" \
+        || echo "[net] br-lan 创建失败，跳过"
 fi
+ip link set br-lan up 2>/dev/null || true
+ip addr add 192.168.1.1/24 dev br-lan 2>/dev/null || true
 
-# ─────────────────────────────────────────────────────────────
-# Auto-load LuCI plugins from /luci-plugins/luci-app-*
-#
-# Supported plugin structures:
-# [Classic Lua]   luasrc/controller/ → /usr/lib/lua/luci/controller/
-#                 luasrc/view/       → /usr/lib/lua/luci/view/
-# [New JS LuCI]   htdocs/luci-static/resources/view/<name>/ → /www/luci-static/resources/view/<name>/
-# [Both]          root/              → / (merged into rootfs)
-# ─────────────────────────────────────────────────────────────
-load_plugins() {
-  mkdir -p /usr/lib/lua/luci/controller /usr/lib/lua/luci/view /www/luci-static/resources/view
+# ── 创建 wg0（WireGuard，10.10.58.1/24）──
+if ! ip link show wg0 > /dev/null 2>&1; then
+    # 优先尝试 wireguard 类型
+    if ip link add dev wg0 type wireguard 2>/dev/null; then
+        echo "[net] ✅ 创建 wg0 (wireguard)"
+    else
+        # 回退：用 dummy 设备模拟接口（UI 展示不受影响）
+        ip link add dev wg0 type dummy 2>/dev/null \
+            && echo "[net] ⚠️  wg0 用 dummy 类型替代（WireGuard 模块不可用）" \
+            || echo "[net] wg0 创建失败，跳过"
+    fi
+fi
+ip link set wg0 up 2>/dev/null || true
+ip addr add 10.10.58.1/24 dev wg0 2>/dev/null || true
 
-  # ── Clean up dangling symlinks from previous deployments ──────
-  for link_dir in /usr/lib/lua/luci/controller /usr/lib/lua/luci/view /www/luci-static/resources/view; do
-    [ -d "$link_dir" ] || continue
-    for link in "$link_dir"/*; do
-      [ -L "$link" ] && [ ! -e "$link" ] && rm -f "$link" && log "INFO: Removed dangling symlink: $link"
-    done
-  done
+# ── 创建 pppoe-wan（dummy 模拟 PPPoE 隧道接口）──
+if ! ip link show pppoe-wan > /dev/null 2>&1; then
+    ip link add dev pppoe-wan type dummy 2>/dev/null \
+        && echo "[net] 创建 pppoe-wan (dummy)" \
+        || echo "[net] pppoe-wan 创建失败，跳过"
+fi
+ip link set pppoe-wan up 2>/dev/null || true
 
-  # Scan for luci-app-* directly under /luci-plugins/
-  for plugin_dir in /luci-plugins/luci-app-*; do
+# ── 创建 utun（TUN 设备，供 phantun 等使用）──
+if ! ip link show utun > /dev/null 2>&1; then
+    ip tuntap add dev utun mode tun 2>/dev/null \
+        && echo "[net] 创建 utun (tun)" \
+        || echo "[net] utun 创建失败，跳过"
+fi
+ip link set utun up 2>/dev/null || true
+
+# ================================================================
+# 3. 配置 UCI 网络接口定义
+#    让 LuCI 能正确识别和展示接口（与真实路由器截图一致）
+# ================================================================
+
+echo "[uci] 配置网络接口..."
+
+# ── LAN ──
+uci -q set network.lan=interface
+uci set network.lan.proto='static'
+uci set network.lan.device='br-lan'
+uci set network.lan.ipaddr='192.168.1.1'
+uci set network.lan.netmask='255.255.255.0'
+
+# ── WAN（PPPoE 模拟）──
+uci -q set network.wan=interface
+uci set network.wan.proto='pppoe'
+uci set network.wan.device='eth0'
+# 模拟 PPPoE 拨号参数（不会真实拨号，仅供 UI 展示）
+uci set network.wan.username='test@isp.example'
+uci set network.wan.password='testpassword'
+
+# ── WAN6（虚拟 DHCPv6 客户端）──
+uci -q set network.wan_6=interface
+uci set network.wan_6.proto='dhcpv6'
+uci set network.wan_6.device='@wan'
+
+# ── WireGuard VPN 接口 ──
+uci -q set network.wg0=interface
+uci set network.wg0.proto='wireguard'
+uci set network.wg0.private_key="$(wg genkey 2>/dev/null || echo 'PLACEHOLDER_PRIVATE_KEY_BASE64=')"
+uci set network.wg0.listen_port='51820'
+uci add_list network.wg0.addresses='10.10.58.1/24'
+
+# ── loopback ──
+uci -q set network.loopback=interface
+uci set network.loopback.proto='static'
+uci set network.loopback.device='lo'
+uci set network.loopback.ipaddr='127.0.0.1'
+uci set network.loopback.netmask='255.0.0.0'
+
+uci commit network
+echo "[uci] ✅ UCI 网络配置已写入"
+
+# ================================================================
+# 4. 自动加载插件
+#    扫描 /luci-plugins/luci-app-* 并创建符号链接
+# ================================================================
+
+echo "[plugin] 扫描并加载插件..."
+
+PLUGIN_ROOT="/luci-plugins"
+LUCI_CTRL="/usr/lib/lua/luci/controller"
+LUCI_VIEW="/usr/lib/lua/luci/view"
+LUCI_MODEL="/usr/lib/lua/luci/model/cbi"
+
+mkdir -p "$LUCI_CTRL" "$LUCI_VIEW" "$LUCI_MODEL"
+
+for plugin_dir in "$PLUGIN_ROOT"/luci-app-*/; do
     [ -d "$plugin_dir" ] || continue
     plugin_name=$(basename "$plugin_dir")
+    echo "[plugin] 加载 $plugin_name"
 
-    # ── Classic Lua: luasrc/controller/*.lua ──────────────────
+    # Controller 文件
     if [ -d "$plugin_dir/luasrc/controller" ]; then
-      for f in "$plugin_dir/luasrc/controller"/*.lua; do
-        [ -f "$f" ] || continue
-        fname=$(basename "$f")
-        if [ ! -e "/usr/lib/lua/luci/controller/$fname" ]; then
-          ln -sf "$f" "/usr/lib/lua/luci/controller/$fname"
-          log "INFO: [classic] controller: $fname ($plugin_name)"
-        fi
-      done
-    fi
-
-    # ── Classic Lua: luasrc/view/<subdir> ─────────────────────
-    if [ -d "$plugin_dir/luasrc/view" ]; then
-      for vdir in "$plugin_dir/luasrc/view"/*/; do
-        [ -d "$vdir" ] || continue
-        vname=$(basename "$vdir")
-        if [ ! -e "/usr/lib/lua/luci/view/$vname" ]; then
-          ln -sf "$vdir" "/usr/lib/lua/luci/view/$vname"
-          log "INFO: [classic] view dir: $vname ($plugin_name)"
-        fi
-      done
-      for f in "$plugin_dir/luasrc/view"/*.htm; do
-        [ -f "$f" ] || continue
-        fname=$(basename "$f")
-        [ ! -e "/usr/lib/lua/luci/view/$fname" ] && ln -sf "$f" "/usr/lib/lua/luci/view/$fname"
-      done
-    fi
-
-    # ── New JS LuCI: htdocs/luci-static/resources/view/<name>/ ─
-    if [ -d "$plugin_dir/htdocs/luci-static/resources/view" ]; then
-      for vdir in "$plugin_dir/htdocs/luci-static/resources/view"/*/; do
-        [ -d "$vdir" ] || continue
-        vname=$(basename "$vdir")
-        if [ ! -e "/www/luci-static/resources/view/$vname" ]; then
-          ln -sf "$vdir" "/www/luci-static/resources/view/$vname"
-          log "INFO: [js] view: $vname ($plugin_name)"
-        fi
-      done
-    fi
-
-    # ── Merge root/ into rootfs (file by file, no overwrite) ──
-    if [ -d "$plugin_dir/root" ]; then
-      find "$plugin_dir/root" -type f | while read src; do
-        rel="${src#$plugin_dir/root/}"
-        dest="/$rel"
-        mkdir -p "$(dirname "$dest")"
-        [ ! -e "$dest" ] && cp "$src" "$dest"
-      done
-      log "INFO: [root] merged: $plugin_name"
-    fi
-  done
-  log "INFO: Plugin auto-load complete"
-}
-
-# ─────────────────────────────────────────────────────────────
-# Auto-load backend dependency packages from /luci-plugins/<name>/
-#
-# Automatically detects any non-luci-app-* subdirectory that has a Makefile.
-# For each detected backend package:
-#   1. Installs init script: files/<name>.init → /etc/init.d/<name>
-#   2. Installs default config: files/<name>.config → /etc/config/<name> (if missing)
-#   3. Installs any other files into /usr/share/<name>/
-#   4. Downloads pre-compiled binary from GitHub Releases (parsed from Makefile)
-#      - Supports ZIP format (e.g. phantun: phantun_x86_64.zip)
-#      - Supports single binary (e.g. udp2raw: udp2raw_x86_64)
-#      - Gracefully skips if release not available (no crash)
-#      - Skips download if binary already installed (overlay persistence)
-# ─────────────────────────────────────────────────────────────
-load_deps() {
-  # Detect container architecture for binary filename mapping
-  local arch_tag
-  case "$(uname -m)" in
-    x86_64)  arch_tag="x86_64" ;;
-    aarch64) arch_tag="aarch64" ;;
-    armv7*)  arch_tag="armv7" ;;
-    *)       arch_tag="$(uname -m)" ;;
-  esac
-  log "INFO: [dep] Container arch: $arch_tag"
-
-  for dep_dir in /luci-plugins/*/; do
-    [ -d "$dep_dir" ] || continue
-    dep_name=$(basename "$dep_dir")
-
-    # Skip front-end plugins (handled by load_plugins)
-    case "$dep_name" in luci-app-*) continue ;; esac
-
-    # Must have a Makefile to be treated as a backend package
-    [ -f "$dep_dir/Makefile" ] || continue
-
-    log "INFO: [dep] Processing backend package: $dep_name"
-
-    # ── 1. Install init script ─────────────────────────────
-    if [ -f "$dep_dir/files/$dep_name.init" ]; then
-      if [ ! -f "/etc/init.d/$dep_name" ]; then
-        cp "$dep_dir/files/$dep_name.init" "/etc/init.d/$dep_name"
-        chmod +x "/etc/init.d/$dep_name"
-        log "INFO: [dep] Installed init: /etc/init.d/$dep_name"
-      else
-        log "INFO: [dep] Init already exists: /etc/init.d/$dep_name"
-      fi
-    fi
-
-    # ── 2. Install default config (only if missing or empty) ─
-    if [ -f "$dep_dir/files/$dep_name.config" ]; then
-      if [ ! -s "/etc/config/$dep_name" ]; then
-        cp "$dep_dir/files/$dep_name.config" "/etc/config/$dep_name"
-        log "INFO: [dep] Installed config: /etc/config/$dep_name"
-      else
-        log "INFO: [dep] Config already exists: /etc/config/$dep_name"
-      fi
-    fi
-
-    # ── 3. Install supplementary files (e.g. .upgrade) ───────
-    if [ -d "$dep_dir/files" ]; then
-      find "$dep_dir/files" -type f ! -name "*.init" ! -name "*.config" | while read src; do
-        fname=$(basename "$src")
-        dest_dir="/usr/share/$dep_name"
-        mkdir -p "$dest_dir"
-        if [ ! -e "$dest_dir/$fname" ]; then
-          cp "$src" "$dest_dir/$fname"
-          log "INFO: [dep] Installed extra file: $dest_dir/$fname"
-        fi
-      done
-    fi
-
-    # ── 4. Download pre-compiled binary from GitHub Releases ──
-    local makefile="$dep_dir/Makefile"
-
-    # Parse repo info from Makefile (REPO_USER:= and REPO_NAME:= lines)
-    repo_user=$(grep '^REPO_USER:=' "$makefile" 2>/dev/null | head -1 | cut -d= -f2 | tr -d ' \t\r')
-    repo_name=$(grep '^REPO_NAME:=' "$makefile" 2>/dev/null | head -1 | cut -d= -f2 | tr -d ' \t\r')
-
-    if [ -z "$repo_user" ] || [ -z "$repo_name" ]; then
-      log "WARN: [dep] No REPO_USER/REPO_NAME in Makefile for $dep_name, skipping binary download"
-      continue
-    fi
-
-    # Parse static PKG_VERSION (PKG_VERSION:=X.X.X, not shell command lines)
-    pkg_version=$(grep '^PKG_VERSION:=[0-9]' "$makefile" 2>/dev/null | head -1 | cut -d= -f2 | tr -d ' \t\r')
-
-    # If no static version, try GitHub API
-    if [ -z "$pkg_version" ]; then
-      pkg_version=$(curl -sf --connect-timeout 8 \
-        "https://api.github.com/repos/$repo_user/$repo_name/releases/latest" 2>/dev/null \
-        | grep '"tag_name"' | cut -d'"' -f4 | sed 's/^v//')
-    fi
-
-    if [ -z "$pkg_version" ]; then
-      log "WARN: [dep] Cannot determine version for $dep_name (no static PKG_VERSION and no GitHub release), skipping binary download"
-      continue
-    fi
-
-    base_url="https://github.com/$repo_user/$repo_name/releases/download/v$pkg_version"
-    log "INFO: [dep] Release URL base: $base_url"
-
-    # Detect format: ZIP (phantun uses phantun_x86_64.zip) vs single binary
-    if grep -q '\.zip' "$makefile" 2>/dev/null; then
-      # ── ZIP format ─────────────────────────────────────────
-      zip_file="${dep_name}_${arch_tag}.zip"
-      download_url="$base_url/$zip_file"
-
-      # Check if any binary already installed (check OpenWrt overlay upper for persistence)
-      already_installed=0
-      for candidate in \
-        "/overlay/upper/usr/bin/${dep_name}" \
-        "/overlay/upper/usr/bin/${dep_name}_client" \
-        "/overlay/upper/usr/bin/${dep_name}_server" \
-        "/usr/bin/${dep_name}" \
-        "/usr/bin/${dep_name}_client" \
-        "/usr/bin/${dep_name}_server"; do
-        [ -x "$candidate" ] && already_installed=1 && break
-      done
-      if [ "$already_installed" = "1" ]; then
-        log "INFO: [dep] Binary already installed for $dep_name, skipping download"
-        continue
-      fi
-
-      # Ensure unzip is available before attempting ZIP extraction
-      if ! command -v unzip >/dev/null 2>&1; then
-        log "INFO: [dep] unzip not found, installing..."
-        opkg install unzip >/dev/null 2>&1 && log "INFO: [dep] unzip installed" || log "WARN: [dep] unzip install failed"
-      fi
-
-      log "INFO: [dep] Downloading ZIP: $download_url"
-      tmp_zip="/tmp/${dep_name}_${arch_tag}.zip"
-      if curl -sfL --connect-timeout 30 --retry 2 -o "$tmp_zip" "$download_url" 2>/dev/null \
-         && [ -s "$tmp_zip" ]; then
-        extract_dir="/tmp/${dep_name}_extract"
-        mkdir -p "$extract_dir"
-        unzip -o "$tmp_zip" -d "$extract_dir" 2>/dev/null
-        # Install to OpenWrt overlay upper dir for persistence across container restarts
-        mkdir -p /overlay/upper/usr/bin
-        for bin in "$extract_dir"/*; do
-          [ -f "$bin" ] || continue
-          bname=$(basename "$bin")
-          cp "$bin" "/overlay/upper/usr/bin/$bname" && chmod +x "/overlay/upper/usr/bin/$bname"
-          log "INFO: [dep] Installed binary (persistent): /overlay/upper/usr/bin/$bname"
+        for f in "$plugin_dir/luasrc/controller/"*.lua; do
+            [ -f "$f" ] || continue
+            fname=$(basename "$f")
+            target="$LUCI_CTRL/$fname"
+            [ -L "$target" ] || ln -sf "$f" "$target"
         done
-        rm -f "$tmp_zip"
-        rm -rf "$extract_dir"
-      else
-        rm -f "$tmp_zip"
-        log "WARN: [dep] ZIP download failed for $dep_name v$pkg_version (release may not be published yet) - LuCI UI still works"
-      fi
-
-    else
-      # ── Single binary format ────────────────────────────────
-      dest_bin="/overlay/upper/usr/bin/$dep_name"
-
-      # Check both overlay upper and /usr/bin for existing installation
-      if [ -x "$dest_bin" ] || [ -x "/usr/bin/$dep_name" ]; then
-        log "INFO: [dep] Binary already installed: $dep_name, skipping download"
-        continue
-      fi
-      mkdir -p /overlay/upper/usr/bin
-
-      bin_file="${dep_name}_${arch_tag}"
-      download_url="$base_url/$bin_file"
-
-      log "INFO: [dep] Downloading binary: $download_url"
-      tmp_bin="/tmp/${dep_name}_dl"
-      if curl -sfL --connect-timeout 30 --retry 2 -o "$tmp_bin" "$download_url" 2>/dev/null \
-         && [ -s "$tmp_bin" ]; then
-        cp "$tmp_bin" "$dest_bin" && chmod +x "$dest_bin"
-        rm -f "$tmp_bin"
-        log "INFO: [dep] Installed binary (persistent): $dest_bin"
-      else
-        rm -f "$tmp_bin"
-        log "WARN: [dep] Binary download failed for $dep_name v$pkg_version (release may not be published yet) - LuCI UI still works"
-      fi
     fi
-  done
 
-  log "INFO: Backend dependency auto-load complete"
-}
-
-load_plugins
-load_deps
-
-# ─────────────────────────────────────────────────────────────
-# Post-load: run uci-defaults, init UCI configs, clear LuCI cache
-# ─────────────────────────────────────────────────────────────
-
-# 1. Run uci-defaults scripts from all plugins
-#    Scan both standard path (/etc/uci-defaults/) and non-standard paths
-#    that plugins may have placed under root/usr/share/etc/uci-defaults/
-for defaults_dir in /etc/uci-defaults /usr/share/etc/uci-defaults; do
-  [ -d "$defaults_dir" ] || continue
-  for script in "$defaults_dir"/*; do
-    [ -f "$script" ] || continue
-    [ -x "$script" ] || chmod +x "$script"
-    sh "$script" 2>/dev/null && rm -f "$script" && log "INFO: uci-default executed: $(basename $script)"
-  done
-done
-log "INFO: uci-defaults executed"
-
-# 2. Auto-create missing UCI config files required by menu.d depends.uci
-#    Creates a valid UCI section (not just empty touch) so LuCI menu.d depends check passes
-for menu_json in /usr/share/luci/menu.d/luci-app-*.json; do
-  [ -f "$menu_json" ] || continue
-  # Extract UCI config names from "uci": { "<name>": true }
-  uci_names=$(grep -o '"uci"[[:space:]]*:[[:space:]]*{[^}]*}' "$menu_json" 2>/dev/null | grep -o '"[a-z0-9_-]*"[[:space:]]*:[[:space:]]*true' | sed 's/[" ]//g' | cut -d: -f1)
-  for cfg in $uci_names; do
-    [ -z "$cfg" ] && continue
-    # Only create if file missing or empty (uci-defaults may have already created it)
-    if [ ! -s "/etc/config/$cfg" ]; then
-      # Write a minimal valid UCI section so LuCI depends.uci check passes
-      printf "config globals 'globals'\n\toption enabled '0'\n" > "/etc/config/$cfg"
-      log "INFO: Created UCI config with valid section: /etc/config/$cfg"
+    # View 目录
+    if [ -d "$plugin_dir/luasrc/view" ]; then
+        for d in "$plugin_dir/luasrc/view/"/*/; do
+            [ -d "$d" ] || continue
+            dname=$(basename "$d")
+            target="$LUCI_VIEW/$dname"
+            [ -L "$target" ] || ln -sf "$d" "$target"
+        done
+        # 直接在 view 根下的 .htm 文件
+        for f in "$plugin_dir/luasrc/view/"*.htm; do
+            [ -f "$f" ] || continue
+            fname=$(basename "$f")
+            target="$LUCI_VIEW/$fname"
+            [ -L "$target" ] || ln -sf "$f" "$target"
+        done
     fi
-  done
+
+    # Model/CBI 文件
+    if [ -d "$plugin_dir/luasrc/model/cbi" ]; then
+        for f in "$plugin_dir/luasrc/model/cbi/"*.lua; do
+            [ -f "$f" ] || continue
+            fname=$(basename "$f")
+            target="$LUCI_MODEL/$fname"
+            [ -L "$target" ] || ln -sf "$f" "$target"
+        done
+    fi
+
+    # root/ 目录覆盖（系统配置文件、init.d 脚本等）
+    if [ -d "$plugin_dir/root" ]; then
+        cp -rl "$plugin_dir/root/." / 2>/dev/null || \
+        cp -r  "$plugin_dir/root/." / 2>/dev/null || true
+    fi
+
+    # 如果插件有 init.d 脚本，注册启动
+    if [ -d "$plugin_dir/root/etc/init.d" ]; then
+        for initf in "$plugin_dir/root/etc/init.d/"*; do
+            [ -f "$initf" ] || continue
+            svc=$(basename "$initf")
+            chmod +x "/etc/init.d/$svc" 2>/dev/null || true
+        done
+    fi
 done
 
-# 3. Clear LuCI module/index cache so new menus are picked up
-rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
-log "INFO: LuCI cache cleared"
+echo "[plugin] ✅ 插件加载完毕"
 
-# 4. Reload rpcd so ACL entries take effect
-/etc/init.d/rpcd restart 2>/dev/null
-log "INFO: rpcd reloaded"
+# ================================================================
+# 5. 启动系统服务
+# ================================================================
 
-/etc/init.d/uhttpd enable 2>/dev/null
-/etc/init.d/uhttpd start 2>/dev/null
-log "INFO: uhttpd started"
+echo "[service] 启动服务..."
 
-/etc/init.d/dropbear enable 2>/dev/null
-/etc/init.d/dropbear start 2>/dev/null
-log "INFO: dropbear started"
+# rpcd（LuCI 后端 RPC 守护进程）
+if [ -x /sbin/rpcd ] || [ -x /usr/sbin/rpcd ]; then
+    rpcd -s /var/run/ubus.sock &
+    sleep 1
+fi
 
-chown -R 1000:1000 /luci-plugins 2>/dev/null
-chown -R 1000:1000 /packages 2>/dev/null
+# ubusd
+if [ -x /sbin/ubusd ]; then
+    ubusd &
+    sleep 1
+fi
 
-log "INFO: === Container Ready ==="
-log "INFO: LuCI: http://localhost:8080"
-log "INFO: SSH:  ssh root@localhost -p 2222 (password: password)"
+# netifd（网络接口守护进程，让 UCI 生效）
+if [ -x /sbin/netifd ]; then
+    /sbin/netifd &
+    sleep 2
+fi
 
-exec /sbin/init
+# SSH（守护进程模式）
+if [ -x /usr/sbin/sshd ]; then
+    mkdir -p /var/run/sshd
+    # 生成宿主密钥（如果不存在）
+    [ -f /etc/ssh/ssh_host_rsa_key ] || ssh-keygen -A 2>/dev/null || true
+    /usr/sbin/sshd &
+    echo "[service] ✅ sshd 已启动（端口 22 → 宿主机 2222）"
+fi
+
+# uhttpd（LuCI Web 服务器，前台运行保持容器存活）
+echo "[service] 启动 uhttpd（LuCI Web 端口 80 → 宿主机 8080）..."
+echo "[service] ✅ LuCI 就绪 → http://localhost:8080  (root/password)"
+echo "========================================================"
+
+exec /usr/sbin/uhttpd -f \
+    -h /www \
+    -l 0.0.0.0:80 \
+    -L /usr/share/uhttpd/lua.sh \
+    -u /ubus \
+    -x /cgi-bin \
+    -t 60 \
+    -T 30 \
+    2>&1
