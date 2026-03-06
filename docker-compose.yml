@@ -59,7 +59,11 @@ services:
       - FORCE_REINIT=0
 
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/cgi-bin/luci/ || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "wget -S -O /dev/null http://127.0.0.1/cgi-bin/luci/ 2>&1 | grep -Eq 'HTTP/[0-9.]+ (200|302|403)'"
+        ]
       interval: 30s
       timeout: 10s
       retries: 5

@@ -99,7 +99,9 @@ if [ "$ROLE" = "server" ]; then
 
     uci -q set network.wan=interface
     uci set network.wan.proto='pppoe'
-    uci set network.wan.device='eth0'
+    # 不要接管 Docker 分配给容器管理面的 eth0，否则会打断宿主机 -> 容器端口映射。
+    # 用我们自己创建的 dummy 设备承载 PPPoE 测试语义，保留 UI/协议对象，又不影响 LuCI/SSH 暴露。
+    uci set network.wan.device='pppoe-wan'
     uci set network.wan.username='test@isp.example'
     uci set network.wan.password='testpassword'
 
@@ -179,6 +181,24 @@ if [ "$ROLE" = "server" ]; then
         fi
     done
     echo "[plugin] ✅ 插件加载完毕"
+fi
+
+patch_luci_templates_for_devbox() {
+    for f in \
+        /usr/share/ucode/luci/template/themes/bootstrap/header.ut \
+        /usr/share/ucode/luci/template/themes/bootstrap-light/header.ut \
+        /usr/share/ucode/luci/template/themes/bootstrap-dark/header.ut; do
+        [ -f "$f" ] || continue
+
+        # OpenWrt 24.10 在当前 devbox 这种精简/非 procd 完整引导环境里，
+        # ubus.call('system', 'board') 可能返回空值，默认模板会在登录页直接 500。
+        # 这里做幂等兼容补丁：空值时退化为 {}，保证 LuCI 登录页可渲染。
+        sed -i "s/const boardinfo = ubus.call('system', 'board');/const boardinfo = ubus.call('system', 'board') || {};/" "$f" 2>/dev/null || true
+    done
+}
+
+if [ "$ROLE" = "server" ]; then
+    patch_luci_templates_for_devbox
 fi
 
 # ================================================================

@@ -91,7 +91,7 @@ fi
 # ================================================================
 echo -e "${YELLOW}⏳ 等待 LuCI Web 就绪...${NC}"
 elapsed=0
-until docker exec "$PRIMARY_CONTAINER" wget -q -O /dev/null http://127.0.0.1/cgi-bin/luci/ > /dev/null 2>&1; do
+until docker exec "$PRIMARY_CONTAINER" sh -lc "wget -S -O /dev/null http://127.0.0.1/cgi-bin/luci/ 2>&1 | grep -Eq 'HTTP/[0-9.]+ (200|302|403)'" > /dev/null 2>&1; do
     sleep "$INTERVAL"
     elapsed=$((elapsed + INTERVAL))
     printf "  已等待 %ds...\r" "$elapsed"
