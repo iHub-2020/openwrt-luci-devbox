@@ -23,7 +23,7 @@ services:
     container_name: openwrt-luci-devbox
     hostname: OpenWrt
     restart: unless-stopped
-    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    entrypoint: ["/bin/ash", "/entrypoint.sh"]
 
     # 网络模式：bridge（容器独立命名空间，NET_ADMIN 不影响宿主机）
     network_mode: bridge
@@ -59,7 +59,7 @@ services:
       - FORCE_REINIT=0
 
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1/cgi-bin/luci/ > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/cgi-bin/luci/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5

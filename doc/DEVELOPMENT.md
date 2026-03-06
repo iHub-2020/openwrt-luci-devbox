@@ -3,26 +3,22 @@
 ## 目录结构
 
 ```
-/home/reyan/Projects/openwrt-dev/
+/home/reyan/Projects/openwrt-luci-devbox/
 ├── doc/                          # 文档目录
 │   ├── DEVELOPMENT.md            # 本开发手册
 │   └── USAGE.md                  # 使用/调试手册
-├── config/                       # OpenWrt UCI 配置模板
-├── packages/                     # IPK 包目录（挂载到容器 /packages）
+├── config/                       # OpenWrt UCI 配置模板 / seed
 ├── plugins/                      # 插件开发目录（挂载到容器 /luci-plugins）
-│   └── openwrt-reyan_new/        # 插件仓库
-│       ├── luci-app-lucky/
-│       ├── luci-app-phantun/
-│       ├── luci-app-poweroffdevice/
-│       ├── luci-app-udp-speeder/
-│       └── luci-app-udp-tunnel/
-├── dev.sh                        # 开发辅助脚本（插件链接/重载）
-├── docker-init.sh                # Docker 初始化脚本
-└── init-luci.sh                  # LuCI 初始化脚本
-
-/opt/openwrt-dev/                 # 容器持久化配置
-├── docker-compose.yml            # Docker Compose 配置
-└── entrypoint.sh                 # 容器启动脚本
+│   ├── luci-app-phantun/
+│   ├── luci-app-poweroffdevice/
+│   ├── luci-app-udp-speeder/
+│   └── luci-app-udp-tunnel/
+├── dev.sh                        # 开发辅助脚本（重载/状态/SSH）
+├── docker-init.sh                # 容器初始化脚本
+├── docker-compose.yml            # 单容器模式
+├── docker-compose.dual.yml       # 双容器模式（通讯类插件）
+├── entrypoint.sh                 # 容器启动脚本
+└── init-luci.sh                  # LuCI 就绪等待脚本
 ```
 
 ## 插件目录结构规范
@@ -66,20 +62,21 @@ luci-app-xxx/
 
 ### 启动开发环境
 
-1. 通过 Portainer Stack 部署：
-   - 将 `/opt/openwrt-dev/docker-compose.yml` 作为 stack 文件
-   - 容器会自动启动并安装依赖（首次约需 30 秒）
-
-2. 或命令行启动：
+1. 命令行启动（普通 LuCI/UI 插件）
    ```bash
-   cd /opt/openwrt-dev
+   cd /home/reyan/Projects/openwrt-luci-devbox
    docker compose up -d
+   ```
+
+2. 命令行启动（通讯类插件：如 phantun/udp2raw）
+   ```bash
+   cd /home/reyan/Projects/openwrt-luci-devbox
+   docker compose -f docker-compose.dual.yml up -d
    ```
 
 3. 验证容器状态：
    ```bash
-   docker ps --filter "name=openwrt-dev"
-   # 状态应为 (healthy)
+   docker ps | grep -E 'openwrt-luci-devbox|openwrt-server|openwrt-peer'
    ```
 
 ## 新建插件流程
@@ -87,7 +84,7 @@ luci-app-xxx/
 ### 1. 创建插件目录
 
 ```bash
-cd /home/reyan/Projects/openwrt-dev/plugins/openwrt-reyan_new/
+cd /home/reyan/Projects/openwrt-luci-devbox/plugins
 mkdir -p luci-app-myplugin/luasrc/controller
 mkdir -p luci-app-myplugin/luasrc/view/myplugin
 mkdir -p luci-app-myplugin/root/usr/share/rpcd/acl.d
@@ -112,11 +109,11 @@ end
 EOF
 ```
 
-### 3. 链接插件到容器
+### 3. 自动加载插件并重载 LuCI
 
 ```bash
-cd /home/reyan/Projects/openwrt-dev/
-./dev.sh link luci-app-myplugin
+cd /home/reyan/Projects/openwrt-luci-devbox/
+# 插件目录挂载在 /luci-plugins，启动时自动扫描加载
 ./dev.sh reload
 ```
 
@@ -128,19 +125,18 @@ cd /home/reyan/Projects/openwrt-dev/
 
 | 宿主机路径 | 容器内路径 | 说明 |
 |-----------|-----------|------|
-| `/home/reyan/Projects/openwrt-dev/plugins` | `/luci-plugins` | 插件开发目录 |
-| `/home/reyan/Projects/openwrt-dev/packages` | `/packages` | IPK 包目录 |
-| `openwrt-overlay` (Docker Volume) | `/overlay` | 系统持久化 |
+| `/home/reyan/Projects/openwrt-luci-devbox/plugins` | `/luci-plugins` | 插件开发目录 |
+| `opkg-cache` / `opkg-cache-server` / `opkg-cache-peer` | `/var/opkg-lists` | opkg 索引缓存 |
 
 ## dev.sh 使用说明
 
 ```bash
-./dev.sh list                          # 列出所有插件
-./dev.sh link luci-app-poweroffdevice  # 链接插件到容器
-./dev.sh reload                        # 重启 uhttpd 使改动生效
-./dev.sh status                        # 查看容器状态
-./dev.sh log                           # 查看容器日志
-./dev.sh ssh                           # SSH 登录容器
+./dev.sh list          # 列出所有插件
+./dev.sh reload        # 重载 LuCI / uhttpd 使改动生效
+./dev.sh status        # 查看当前模式、容器状态与 WireGuard 状态
+./dev.sh log           # 查看容器日志（dual 模式会同时跟随 server/peer）
+./dev.sh ssh           # SSH 登录 server
+./dev.sh ssh peer      # 双容器模式下 SSH 登录 peer
 ```
 
 ## 热重载开发流程
@@ -154,7 +150,8 @@ cd /home/reyan/Projects/openwrt-dev/
 ## 更新插件仓库
 
 ```bash
-cd /home/reyan/Projects/openwrt-dev/plugins/openwrt-reyan_new/
+cd /home/reyan/Projects/openwrt-luci-devbox/plugins
 git pull
+cd ..
 ./dev.sh reload
 ```

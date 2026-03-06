@@ -28,7 +28,7 @@ echo "========================================================"
 # 1. 首次初始化（安装 opkg 包）
 # ================================================================
 mkdir -p /var/lock /var/run /var/log /tmp/run
-/bin/sh /docker-init.sh
+/bin/ash /docker-init.sh
 
 # ================================================================
 # 2. 写入 UCI 配置模板（从挂载的 /config-templates/ 复制）
@@ -137,7 +137,8 @@ if [ "$ROLE" = "server" ]; then
     LUCI_CTRL="/usr/lib/lua/luci/controller"
     LUCI_VIEW="/usr/lib/lua/luci/view"
     LUCI_MODEL="/usr/lib/lua/luci/model/cbi"
-    mkdir -p "$LUCI_CTRL" "$LUCI_VIEW" "$LUCI_MODEL"
+    LUCI_JS_VIEW="/www/luci-static/resources/view"
+    mkdir -p "$LUCI_CTRL" "$LUCI_VIEW" "$LUCI_MODEL" "$LUCI_JS_VIEW"
 
     for plugin_dir in "$PLUGIN_ROOT"/luci-app-*/; do
         [ -d "$plugin_dir" ] || continue
@@ -165,6 +166,14 @@ if [ "$ROLE" = "server" ]; then
             done
         fi
 
+        # New-style JS LuCI views (24.10 常见)
+        if [ -d "$plugin_dir/htdocs/luci-static/resources/view" ]; then
+            for d in "$plugin_dir/htdocs/luci-static/resources/view/"/*/; do
+                [ -d "$d" ] || continue
+                ln -snf "$d" "$LUCI_JS_VIEW/$(basename "$d")" 2>/dev/null || true
+            done
+        fi
+
         if [ -d "$plugin_dir/root" ]; then
             cp -r "$plugin_dir/root/." / 2>/dev/null || true
         fi
@@ -177,11 +186,23 @@ fi
 # ================================================================
 echo "[service] 启动服务..."
 
-# ubusd
-[ -x /sbin/ubusd ] && { ubusd & sleep 1; }
+# ubusd / rpcd
+UBUS_DIR="/var/run/ubus"
+UBUS_SOCK="$UBUS_DIR/ubus.sock"
+mkdir -p "$UBUS_DIR"
+if [ -x /sbin/ubusd ]; then
+    ubusd -s "$UBUS_SOCK" &
+    sleep 1
+    ln -snf "$UBUS_SOCK" /var/run/ubus.sock
+fi
 
-# rpcd
-[ -x /sbin/rpcd ] || [ -x /usr/sbin/rpcd ] && { rpcd -s /var/run/ubus.sock & sleep 1; }
+if [ -x /sbin/rpcd ]; then
+    /sbin/rpcd -s "$UBUS_SOCK" &
+    sleep 1
+elif [ -x /usr/sbin/rpcd ]; then
+    /usr/sbin/rpcd -s "$UBUS_SOCK" &
+    sleep 1
+fi
 
 # netifd
 [ -x /sbin/netifd ] && { /sbin/netifd & sleep 2; }
@@ -189,6 +210,7 @@ echo "[service] 启动服务..."
 # SSH（两种角色都启动，方便进容器调试）
 if [ -x /usr/sbin/sshd ]; then
     mkdir -p /var/run/sshd
+    [ -f /etc/ssh/sshd_config ] && sed -i '/^UsePAM[[:space:]]\+/d' /etc/ssh/sshd_config
     [ -f /etc/ssh/ssh_host_rsa_key ] || ssh-keygen -A 2>/dev/null || true
     /usr/sbin/sshd &
     echo "[service] ✅ sshd 已启动"
@@ -199,15 +221,21 @@ fi
 # ================================================================
 if [ "$ROLE" = "server" ]; then
     echo "[service] 启动 uhttpd（LuCI Web → http://localhost:8080）..."
+    set -- /usr/sbin/uhttpd -f -h /www -p 0.0.0.0:80 -x /cgi-bin -u /ubus -t 60 -T 30
+
+    # LuCI 24.10 默认优先走 ucode handler
+    if [ -f /usr/lib/uhttpd_ucode.so ] && [ -f /usr/share/ucode/luci/uhttpd.uc ]; then
+        set -- "$@" -o /cgi-bin/luci -O /usr/share/ucode/luci/uhttpd.uc
+    fi
+
+    # 兼容仍依赖 Lua handler 的场景
+    if [ -f /usr/lib/uhttpd_lua.so ] && [ -f /usr/lib/lua/luci/sgi/uhttpd.lua ]; then
+        set -- "$@" -l /cgi-bin/luci -L /usr/lib/lua/luci/sgi/uhttpd.lua
+    fi
+
     echo "[service] ✅ 就绪 (root/password)"
     echo "========================================================"
-    exec /usr/sbin/uhttpd -f \
-        -h /www \
-        -l 0.0.0.0:80 \
-        -L /usr/share/uhttpd/lua.sh \
-        -u /ubus \
-        -x /cgi-bin \
-        -t 60 -T 30 2>&1
+    exec "$@"
 else
     # peer 模式：没有 LuCI，用 tail 保持容器存活
     echo "[service] peer 容器就绪（无 LuCI，仅 SSH 端口 2223）"

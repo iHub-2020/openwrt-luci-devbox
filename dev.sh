@@ -4,7 +4,9 @@
 #  用法: ./dev.sh <命令> [参数]
 # ==============================================================
 
-CONTAINER="openwrt-luci-devbox"
+CONTAINER_SINGLE="openwrt-luci-devbox"
+CONTAINER_SERVER="openwrt-server"
+CONTAINER_PEER="openwrt-peer"
 PLUGIN_DIR="./plugins"
 
 # 颜色输出
@@ -19,17 +21,37 @@ err()  { echo -e "${RED}❌ $*${NC}"; }
 # ----------------------------------------------------------------
 #  内部辅助
 # ----------------------------------------------------------------
+detect_mode() {
+    if docker ps --filter "name=^${CONTAINER_SERVER}$" --filter "status=running" -q | grep -q .; then
+        echo dual
+    elif docker ps --filter "name=^${CONTAINER_SINGLE}$" --filter "status=running" -q | grep -q .; then
+        echo single
+    else
+        echo none
+    fi
+}
+
+primary_container() {
+    case "$(detect_mode)" in
+        dual) echo "$CONTAINER_SERVER" ;;
+        single) echo "$CONTAINER_SINGLE" ;;
+        *) return 1 ;;
+    esac
+}
+
 container_running() {
-    docker ps --filter "name=^${CONTAINER}$" --filter "status=running" -q | grep -q .
+    primary_container >/dev/null 2>&1
 }
 
 exec_in() {
-    docker exec -it "$CONTAINER" "$@"
+    local c
+    c="$(primary_container)" || return 1
+    docker exec -it "$c" "$@"
 }
 
 require_running() {
     if ! container_running; then
-        err "容器未运行，请先执行: docker compose up -d"
+        err "容器未运行，请先执行: docker compose up -d 或 docker compose -f docker-compose.dual.yml up -d"
         exit 1
     fi
 }
@@ -39,59 +61,98 @@ require_running() {
 # ----------------------------------------------------------------
 
 cmd_status() {
+    local mode c
+    mode="$(detect_mode)"
+    echo "=== 运行模式 ==="
+    echo "$mode"
+    echo ""
     echo "=== 容器状态 ==="
-    docker ps --filter "name=$CONTAINER" --format \
-        "ID: {{.ID}}\n状态: {{.Status}}\n端口: {{.Ports}}"
+    docker ps --format "{{.Names}} | {{.Status}} | {{.Ports}}" | grep -E "^(openwrt-luci-devbox|openwrt-server|openwrt-peer) \|" || true
     echo ""
-    echo "=== 网络接口 ==="
-    docker exec "$CONTAINER" ip -br link 2>/dev/null || warn "容器未运行"
+    c="$(primary_container 2>/dev/null)" || { warn "容器未运行"; return 0; }
+    echo "=== 主容器网络接口 ($c) ==="
+    docker exec "$c" ip -br link 2>/dev/null || warn "容器未运行"
     echo ""
-    echo "=== WireGuard ==="
-    docker exec "$CONTAINER" wg show 2>/dev/null || warn "wg 命令不可用或无 WireGuard 接口"
+    echo "=== 主容器 WireGuard ($c) ==="
+    docker exec "$c" wg show 2>/dev/null || warn "wg 命令不可用或无 WireGuard 接口"
+    if [ "$mode" = "dual" ]; then
+        echo ""
+        echo "=== peer 网络接口 ($CONTAINER_PEER) ==="
+        docker exec "$CONTAINER_PEER" ip -br link 2>/dev/null || true
+    fi
 }
 
 cmd_list() {
     require_running
-    echo "=== 已加载的插件 ==="
-    docker exec "$CONTAINER" ls /luci-plugins/ 2>/dev/null | grep "^luci-app-" | while read -r p; do
+    local c
+    c="$(primary_container)"
+    echo "=== 已加载的插件 ($c) ==="
+    docker exec "$c" ls /luci-plugins/ 2>/dev/null | grep "^luci-app-" | while read -r p; do
         echo "  📦 $p"
     done
     echo ""
     echo "=== Controller 链接 ==="
-    docker exec "$CONTAINER" ls /usr/lib/lua/luci/controller/ 2>/dev/null
+    docker exec "$c" ls /usr/lib/lua/luci/controller/ 2>/dev/null
 }
 
 cmd_reload() {
     require_running
-    echo "重载 uhttpd + 清除 LuCI 缓存..."
-    exec_in rm -rf /tmp/luci-* /tmp/lua-* /tmp/*.luac 2>/dev/null || true
-    exec_in kill -HUP "$(docker exec "$CONTAINER" pidof uhttpd 2>/dev/null)" 2>/dev/null \
-        || exec_in /etc/init.d/uhttpd restart 2>/dev/null \
-        || warn "uhttpd 重启失败，请手动检查"
+    local c pid
+    c="$(primary_container)"
+    echo "重载 uhttpd + 清除 LuCI 缓存 ($c)..."
+    docker exec "$c" rm -rf /tmp/luci-* /tmp/lua-* /tmp/*.luac 2>/dev/null || true
+    pid="$(docker exec "$c" pidof uhttpd 2>/dev/null || true)"
+    if [ -n "$pid" ]; then
+        docker exec "$c" kill -HUP "$pid" 2>/dev/null || docker exec "$c" /etc/init.d/uhttpd restart 2>/dev/null || warn "uhttpd 重启失败，请手动检查"
+    else
+        docker exec "$c" /etc/init.d/uhttpd restart 2>/dev/null || warn "uhttpd 未运行或重启失败，请手动检查"
+    fi
     ok "已重载，刷新浏览器即可看到最新变更"
 }
 
 cmd_ssh() {
     require_running
+    local target="${1:-server}"
+    local port
+    case "$target" in
+        server) port=2222 ;;
+        peer) port=2223 ;;
+        *) err "用法: ./dev.sh ssh [server|peer]"; exit 1 ;;
+    esac
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        -p 2222 root@localhost
+        -p "$port" root@localhost
 }
 
 cmd_log() {
-    docker logs -f --tail=100 "$CONTAINER"
+    local mode
+    mode="$(detect_mode)"
+    case "$mode" in
+        dual)
+            docker logs -f --tail=100 "$CONTAINER_SERVER" &
+            docker logs -f --tail=100 "$CONTAINER_PEER"
+            ;;
+        single)
+            docker logs -f --tail=100 "$CONTAINER_SINGLE"
+            ;;
+        *) err "容器未运行"; exit 1 ;;
+    esac
 }
 
 cmd_shell() {
     require_running
-    exec_in /bin/bash 2>/dev/null || exec_in /bin/ash
+    local c
+    c="$(primary_container)"
+    docker exec -it "$c" /bin/bash 2>/dev/null || docker exec -it "$c" /bin/ash
 }
 
 cmd_wg_genkey() {
-    # 在容器内生成 WireGuard 密钥对并打印（方便配置 peer）
+    # 在主容器内生成 WireGuard 密钥对并打印（方便配置 peer）
     require_running
-    echo "=== 生成 WireGuard 密钥对 ==="
-    PRIVKEY=$(exec_in wg genkey 2>/dev/null)
-    PUBKEY=$(echo "$PRIVKEY" | exec_in wg pubkey 2>/dev/null)
+    local c
+    c="$(primary_container)"
+    echo "=== 生成 WireGuard 密钥对 ($c) ==="
+    PRIVKEY=$(docker exec "$c" wg genkey 2>/dev/null)
+    PUBKEY=$(printf '%s\n' "$PRIVKEY" | docker exec -i "$c" wg pubkey 2>/dev/null)
     echo "PrivateKey = $PRIVKEY"
     echo "PublicKey  = $PUBKEY"
 }
@@ -99,11 +160,13 @@ cmd_wg_genkey() {
 cmd_wg_qr() {
     # 生成 WireGuard 客户端配置二维码
     require_running
-    local peer_name="${1:-peer1}"
-    echo "=== 生成 $peer_name 的 WireGuard 配置二维码 ==="
-    PEER_PRIVKEY=$(exec_in wg genkey)
-    PEER_PUBKEY=$(echo "$PEER_PRIVKEY" | exec_in wg pubkey)
-    SERVER_PUBKEY=$(exec_in wg show wg0 public-key 2>/dev/null || echo "SERVER_PUB_KEY")
+    local c peer_name
+    c="$(primary_container)"
+    peer_name="${1:-peer1}"
+    echo "=== 生成 $peer_name 的 WireGuard 配置二维码 ($c) ==="
+    PEER_PRIVKEY=$(docker exec "$c" wg genkey)
+    PEER_PUBKEY=$(printf '%s\n' "$PEER_PRIVKEY" | docker exec -i "$c" wg pubkey)
+    SERVER_PUBKEY=$(docker exec "$c" wg show wg0 public-key 2>/dev/null || echo "SERVER_PUB_KEY")
     
     CONFIG=$(cat << EOF
 [Interface]
@@ -118,7 +181,7 @@ Endpoint = YOUR_SERVER_IP:51820
 PersistentKeepalive = 25
 EOF
 )
-    echo "$CONFIG" | exec_in qrencode -t ANSIUTF8
+    printf '%s\n' "$CONFIG" | docker exec -i "$c" qrencode -t ANSIUTF8
     echo ""
     echo "--- 文本配置 ---"
     echo "$CONFIG"
@@ -173,11 +236,24 @@ cmd_push_all() {
 
 cmd_reinit() {
     # 强制重新安装所有包
+    require_running
+    local mode c
+    mode="$(detect_mode)"
     warn "将强制重新初始化容器（重新安装所有包）..."
-    docker exec "$CONTAINER" rm -f /etc/.devbox-initialized
-    docker restart "$CONTAINER"
-    ok "容器已重启，正在重新初始化（请等待约 2 分钟）"
-    docker logs -f "$CONTAINER"
+    if [ "$mode" = "dual" ]; then
+        for c in "$CONTAINER_SERVER" "$CONTAINER_PEER"; do
+            docker exec "$c" rm -f /etc/.devbox-initialized
+            docker restart "$c" >/dev/null
+        done
+        ok "双容器已重启，正在重新初始化（请等待约 2 分钟）"
+        docker logs -f "$CONTAINER_SERVER"
+    else
+        c="$(primary_container)"
+        docker exec "$c" rm -f /etc/.devbox-initialized
+        docker restart "$c" >/dev/null
+        ok "容器已重启，正在重新初始化（请等待约 2 分钟）"
+        docker logs -f "$c"
+    fi
 }
 
 # ----------------------------------------------------------------
@@ -191,7 +267,7 @@ cmd_help() {
   status        显示容器状态和网络接口
   log           查看容器日志 (实时)
   shell         进入容器 shell
-  ssh           SSH 登录容器 (root/password)
+  ssh [目标]    SSH 登录容器，目标为 server|peer（默认 server）
   reinit        强制重新安装所有包（更新后使用）
 
 插件开发:
@@ -210,8 +286,9 @@ WireGuard:
   push-all      推送所有有变更的插件
 
 访问地址:
-  LuCI Web  http://localhost:8080  (root/password)
-  SSH       ssh root@localhost -p 2222
+  LuCI Web  http://localhost:8080         (root/password, server)
+  SSH       ssh root@localhost -p 2222    (server)
+            ssh root@localhost -p 2223    (peer, dual mode)
 HELP
 }
 

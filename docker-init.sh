@@ -9,7 +9,7 @@ FORCE_REINIT="${FORCE_REINIT:-0}"
 
 if [ -f "$INIT_MARKER" ] && [ "$FORCE_REINIT" != "1" ]; then
     echo "[init] 已初始化，跳过安装（如需重装请设置 FORCE_REINIT=1）"
-    return 0
+    exit 0
 fi
 
 echo "========================================================"
@@ -36,7 +36,7 @@ opkg update 2>&1 | tail -5
 # ----------------------------------------------------------------
 echo "[init] 安装基础系统包..."
 opkg install \
-    uhttpd uhttpd-mod-ubus \
+    uhttpd uhttpd-mod-ubus uhttpd-mod-ucode uhttpd-mod-lua \
     rpcd rpcd-mod-rpcsys rpcd-mod-file \
     luci-base luci-mod-admin-full \
     luci-theme-bootstrap \

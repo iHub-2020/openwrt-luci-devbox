@@ -15,8 +15,9 @@ ssh -o StrictHostKeyChecking=no -p 2222 root@localhost
 # 密码: password
 
 # 或使用开发脚本
-cd /home/reyan/Projects/openwrt-dev/
+cd /home/reyan/Projects/openwrt-luci-devbox/
 ./dev.sh ssh
+# 双容器模式下进入 peer：./dev.sh ssh peer
 ```
 
 ---
@@ -28,7 +29,7 @@ cd /home/reyan/Projects/openwrt-dev/
 ```bash
 ./dev.sh status
 # 或
-docker ps --filter "name=openwrt-dev"
+docker ps | grep -E 'openwrt-luci-devbox|openwrt-server|openwrt-peer'
 ```
 
 ### 查看容器日志
@@ -37,45 +38,47 @@ docker ps --filter "name=openwrt-dev"
 # 实时跟踪日志
 ./dev.sh log
 # 或
-docker logs -f openwrt-dev
+docker logs -f openwrt-luci-devbox 2>/dev/null || docker logs -f openwrt-server
 
 # 查看最近 50 行
-docker logs --tail 50 openwrt-dev
+docker logs --tail 50 openwrt-luci-devbox 2>/dev/null || docker logs --tail 50 openwrt-server
 ```
 
 ### 重启容器
 
 ```bash
-cd /opt/openwrt-dev/
+cd /home/reyan/Projects/openwrt-luci-devbox/
 docker compose restart
+# 通讯类插件请改用：docker compose -f docker-compose.dual.yml restart
 ```
 
 ### 停止/启动容器
 
 ```bash
-cd /opt/openwrt-dev/
+cd /home/reyan/Projects/openwrt-luci-devbox/
 docker compose stop
 docker compose start
+# 通讯类插件请改用：docker compose -f docker-compose.dual.yml stop/start
 ```
 
 ### 完全重建（会重新安装依赖包）
 
 ```bash
-cd /opt/openwrt-dev/
+cd /home/reyan/Projects/openwrt-luci-devbox/
 docker compose down
 docker compose up -d
+# 通讯类插件请改用：docker compose -f docker-compose.dual.yml down && docker compose -f docker-compose.dual.yml up -d
 ```
 
 ---
 
 ## 插件开发调试
 
-### 第一步：链接插件到容器
+### 第一步：确认插件目录已挂载
 
 ```bash
-cd /home/reyan/Projects/openwrt-dev/
+cd /home/reyan/Projects/openwrt-luci-devbox/
 ./dev.sh list                           # 查看所有可用插件
-./dev.sh link luci-app-poweroffdevice   # 链接指定插件
 ```
 
 ### 第二步：重载 LuCI
@@ -90,7 +93,7 @@ cd /home/reyan/Projects/openwrt-dev/
 
 ### 修改代码后刷新
 
-1. 直接编辑 `/home/reyan/Projects/openwrt-dev/plugins/openwrt-reyan_new/luci-app-xxx/` 目录中的文件
+1. 直接编辑 `/home/reyan/Projects/openwrt-luci-devbox/plugins/luci-app-xxx/` 目录中的文件
 2. 执行 `./dev.sh reload`
 3. 刷新浏览器（Ctrl+F5 强制刷新）
 
@@ -103,38 +106,46 @@ cd /home/reyan/Projects/openwrt-dev/
 ### 进入容器 Shell
 
 ```bash
-docker exec -it openwrt-dev /bin/sh
+# 单容器 / 双容器(server)
+./dev.sh shell
+
+# 双容器对端
+./dev.sh ssh peer
 ```
 
 ### 查看 LuCI 错误日志
 
 ```bash
-docker exec openwrt-dev logread | grep -i "luci\|error\|warn"
+docker exec openwrt-luci-devbox logread | grep -i "luci\|error\|warn" 2>/dev/null || \
+  docker exec openwrt-server logread | grep -i "luci\|error\|warn"
 ```
 
 ### 检查 uhttpd 状态
 
 ```bash
-docker exec openwrt-dev /etc/init.d/uhttpd status
+docker exec openwrt-luci-devbox /etc/init.d/uhttpd status 2>/dev/null || \
+  docker exec openwrt-server /etc/init.d/uhttpd status
 ```
 
 ### 手动重启 uhttpd
 
 ```bash
-docker exec openwrt-dev /etc/init.d/uhttpd restart
+docker exec openwrt-luci-devbox /etc/init.d/uhttpd restart 2>/dev/null || \
+  docker exec openwrt-server /etc/init.d/uhttpd restart
 ```
 
 ### 查看已安装包
 
 ```bash
-docker exec openwrt-dev opkg list-installed
+docker exec openwrt-luci-devbox opkg list-installed 2>/dev/null || \
+  docker exec openwrt-server opkg list-installed
 ```
 
 ### 安装额外的包
 
 ```bash
-docker exec openwrt-dev opkg update
-docker exec openwrt-dev opkg install <包名>
+docker exec openwrt-luci-devbox opkg update 2>/dev/null || docker exec openwrt-server opkg update
+docker exec openwrt-luci-devbox opkg install <包名> 2>/dev/null || docker exec openwrt-server opkg install <包名>
 ```
 
 ---
@@ -172,10 +183,10 @@ healthcheck:
 
 ```bash
 # 查看容器日志找原因
-docker logs openwrt-dev | tail -20
+docker logs openwrt-luci-devbox | tail -20 2>/dev/null || docker logs openwrt-server | tail -20
 
 # 进入容器手动检查
-docker exec -it openwrt-dev /bin/sh
+docker exec -it openwrt-luci-devbox /bin/sh 2>/dev/null || docker exec -it openwrt-server /bin/sh
 /etc/init.d/uhttpd status
 wget -q -O /dev/null http://localhost/ && echo "OK" || echo "FAIL"
 ```
@@ -184,18 +195,18 @@ wget -q -O /dev/null http://localhost/ && echo "OK" || echo "FAIL"
 
 ```bash
 # 检查端口是否映射正确
-docker port openwrt-dev
+docker port openwrt-luci-devbox 2>/dev/null || docker port openwrt-server
 
 # 检查 uhttpd 是否运行
-docker exec openwrt-dev ps | grep uhttpd
+docker exec openwrt-luci-devbox ps | grep uhttpd 2>/dev/null || docker exec openwrt-server ps | grep uhttpd
 ```
 
 ### 问题：插件在 LuCI 菜单中不显示
 
-1. 确认插件已正确链接：`./dev.sh link luci-app-xxx`
+1. 确认插件目录存在于 `plugins/luci-app-xxx/`
 2. 重载 uhttpd：`./dev.sh reload`
 3. 清除浏览器缓存（Ctrl+F5）
-4. 检查控制器代码的 `entry()` 注册是否正确
+4. 检查 controller / menu.d / htdocs 路径是否正确
 
 ### 问题：首次安装慢
 
@@ -208,9 +219,9 @@ docker exec openwrt-dev ps | grep uhttpd
 
 | 端口 | 说明 |
 |------|------|
-| 8080 | LuCI Web 界面（HTTP） |
-| 8443 | LuCI Web 界面（HTTPS） |
-| 2222 | SSH 访问 |
+| 8080 | LuCI Web 界面（HTTP，server） |
+| 2222 | SSH 访问（server） |
+| 2223 | SSH 访问（peer，双容器模式） |
 
 ---
 
@@ -220,17 +231,17 @@ docker exec openwrt-dev ps | grep uhttpd
 用法: ./dev.sh [命令] [插件名]
 
 命令:
-  link   [插件名]   将插件链接到容器 LuCI 目录
-  unlink [插件名]   取消插件链接
-  reload            重启 uhttpd（使改动生效）
-  log               查看容器日志
-  ssh               SSH 登录容器
+  reload            重载 uhttpd（使改动生效）
+  log               查看容器日志（dual 模式会同时跟随 server/peer）
+  ssh [server|peer] SSH 登录容器
+  shell             进入主容器 shell
   list              列出可用插件
   status            查看容器状态
+  reinit            强制重新安装 opkg 依赖
 
 示例:
   ./dev.sh list
-  ./dev.sh link luci-app-poweroffdevice
   ./dev.sh reload
+  ./dev.sh ssh peer
   ./dev.sh log
 ```
