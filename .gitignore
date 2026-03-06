@@ -16,3 +16,6 @@ logs/
 
 # Docker 运行时数据
 *.pid
+
+# Dockerfile 排除掉
+Dockerfile 
