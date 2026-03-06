@@ -2,19 +2,22 @@
 
 > 模拟 OpenWrt 环境的 LuCI 插件开发测试 Docker 沙盒
 
-[![OpenWrt](https://img.shields.io/badge/OpenWrt-23.05.5-blue)](https://openwrt.org)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker)](https://docs.docker.com/compose/)
+![OpenWrt](https://img.shields.io/badge/OpenWrt-24.10.0-blue)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker)
 
 ## 简介
 
-基于 Docker 的 OpenWrt 模拟开发环境，专为 **LuCI 插件开发调试**设计。无需真实硬件，即可在本地快速验证插件功能。
+基于 Docker 的 OpenWrt 模拟开发环境，专为 **LuCI 插件开发调试**设计，支持网络层插件（WireGuard 伪装、UDP 隧道等）的完整测试。
 
-- ✅ OpenWrt 23.05.5 x86_64
+- ✅ OpenWrt 24.10.0 x86_64
 - ✅ LuCI Web 界面（中文）
+- ✅ WireGuard 完整套件（含二维码生成 `qrencode`）
+- ✅ 模拟接口拓扑：`br-lan` / `pppoe-wan` / `wg0` / `utun`
+- ✅ 网络工具链：`ip-full` / `iptables` / `nftables` / `tc`
 - ✅ SSH 访问
-- ✅ 健康检查（自动验证 uhttpd 状态）
 - ✅ 插件热重载（修改代码 → 刷新浏览器即生效）
-- ✅ 启动时自动加载 `plugins/luci-app-*` 目录下的所有插件
+- ✅ 健康检查（自动验证 uhttpd 状态）
+- ✅ **网络安全隔离**：`NET_ADMIN` 仅作用于容器命名空间，不影响宿主机
 
 ## 快速开始
 
@@ -32,12 +35,11 @@ cd plugins && git sparse-checkout set \
   luci-app-udp-tunnel udp2raw
 cd ..
 
-# 3. 启动容器（Portainer Stack 或命令行）
+# 3. 启动容器
 docker compose up -d
 
-# 4. 等待约 60 秒（首次安装依赖），查看状态
-docker ps --filter "name=openwrt-luci-devbox"
-# 状态显示 (healthy) 即就绪
+# 4. 等待就绪（首次约 2-3 分钟，需下载 opkg 包）
+bash init-luci.sh
 ```
 
 ## 访问
@@ -45,67 +47,72 @@ docker ps --filter "name=openwrt-luci-devbox"
 | 服务 | 地址 | 凭据 |
 |------|------|------|
 | LuCI Web | http://localhost:8080 | root / password |
-| SSH | ssh root@localhost -p 2222 | password |
+| SSH | `ssh root@localhost -p 2222` | password |
 
 ## 开发工作流
 
 ```bash
-# 查看容器和插件状态
-./dev.sh status
-./dev.sh list
+./dev.sh status        # 查看容器状态和网络接口
+./dev.sh list          # 列出已加载的插件
+./dev.sh reload        # 重载 uhttpd（修改代码后执行）
+./dev.sh shell         # 进入容器 shell
+./dev.sh ssh           # SSH 登录容器
+./dev.sh log           # 查看实时日志
 
-# 重启 uhttpd 使改动生效（修改代码后执行）
-./dev.sh reload
+# WireGuard 调试
+./dev.sh wg-genkey     # 生成密钥对
+./dev.sh wg-qr peer1   # 生成客户端配置二维码
 
-# 验证成功后推送单个插件到 GitHub
-./dev.sh push luci-app-poweroffdevice
+# 网络层调试
+./dev.sh net-status    # 查看 ip/iptables/nftables 状态
 
-# 推送所有有改动的插件
-./dev.sh push-all
-
-# 查看容器日志
-./dev.sh log
-
-# SSH 进入容器调试
-./dev.sh ssh
+# 代码提交
+./dev.sh push luci-app-phantun   # 推送单个插件
+./dev.sh push-all                # 推送所有变更
 ```
+
+## 网络安全说明
+
+容器使用 `network_mode: bridge`（Docker 默认），拥有独立的网络命名空间。
+
+- 容器内的 `ip link`、`iptables`、`wg` 等操作**只影响容器自身**，不会修改宿主机路由表或防火墙规则
+- `NET_ADMIN` 能力限定在容器命名空间内
+- 已移除 `SYS_MODULE`（加载内核模块可影响宿主机，不安全）
+- 端口绑定到 `127.0.0.1`，局域网其他设备无法直接访问容器
+
+## 模拟网络接口
+
+容器启动时自动创建以下接口（与真实 OpenWrt 路由器拓扑一致）：
+
+| 接口 | 类型 | 地址 | 说明 |
+|------|------|------|------|
+| `br-lan` | bridge | 192.168.1.1/24 | LAN 网桥 |
+| `pppoe-wan` | dummy | — | 模拟 PPPoE WAN |
+| `wg0` | wireguard/dummy | 10.10.58.1/24 | WireGuard VPN |
+| `utun` | tun | — | 供 phantun/udp2raw 使用 |
 
 ## 目录结构
 
 ```
 openwrt-luci-devbox/
-├── docker-compose.yml   # 容器编排配置
-├── entrypoint.sh        # 容器启动脚本（自动加载插件）
-├── dev.sh               # 开发辅助脚本
-├── config/              # OpenWrt UCI 配置模板
-├── plugins/             # 插件目录（挂载到容器 /luci-plugins，.gitignore 已排除）
-│   ├── .git/            # → openwrt-reyan_new 仓库（用于 push 回 GitHub）
-│   ├── luci-app-phantun/       # LuCI 插件
-│   ├── phantun/                # ↑ 依赖二进制
-│   ├── luci-app-poweroffdevice/ # LuCI 插件（独立）
-│   ├── luci-app-udp-speeder/   # LuCI 插件
-│   ├── udpspeeder/             # ↑ 依赖二进制
-│   ├── luci-app-udp-tunnel/    # LuCI 插件
-│   └── udp2raw/                # ↑ 依赖二进制
+├── docker-compose.yml    # 容器编排
+├── entrypoint.sh         # 容器启动脚本（接口创建 + 插件加载 + 服务启动）
+├── docker-init.sh        # 首次初始化脚本（安装 opkg 包，幂等）
+├── init-luci.sh          # 宿主机侧等待脚本（等待 LuCI 就绪）
+├── dev.sh                # 开发辅助脚本
+├── config/               # UCI 配置模板（容器启动时写入）
+│   ├── network           # 接口定义（lan/wan/wan_6/wg0）
+│   ├── firewall          # 防火墙规则（含 WireGuard zone）
+│   ├── dhcp              # DHCP/DNS 配置
+│   ├── luci              # LuCI 设置（关闭缓存）
+│   ├── system            # 系统设置（时区等）
+│   ├── init-firewall     # 额外 iptables 规则
+│   └── ucitrack          # UCI 变更追踪
+├── plugins/              # 插件目录（.gitignore 已排除）
 └── doc/
-    ├── DEVELOPMENT.md   # 开发手册（插件结构、新建流程）
-    └── USAGE.md         # 使用手册（调试命令、常见问题）
+    ├── DEVELOPMENT.md
+    └── USAGE.md
 ```
-
-## 插件自动加载机制
-
-容器启动时，`entrypoint.sh` 会自动扫描 `/luci-plugins/luci-app-*` 并：
-
-1. 将 `luasrc/controller/*.lua` 链接到 `/usr/lib/lua/luci/controller/`
-2. 将 `luasrc/view/<子目录>` 链接到 `/usr/lib/lua/luci/view/`
-3. 将 `root/` 目录合并到容器根文件系统
-
-**无需手动 link**，直接修改代码后执行 `./dev.sh reload` 即可。
-
-## 文档
-
-- 📖 [开发手册](doc/DEVELOPMENT.md) — 目录结构、插件开发规范、dev.sh 说明
-- 📖 [使用/调试手册](doc/USAGE.md) — 容器管理、健康检查、常见问题
 
 ## 相关项目
 
