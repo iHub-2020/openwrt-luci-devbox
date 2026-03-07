@@ -1,0 +1,30 @@
+{
+  "admin/services/phantun": {
+    "title": "Phantun",
+    "order": 60,
+    "action": {
+      "type": "firstchild"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-phantun"
+      ]
+    }
+  },
+  "admin/services/phantun/config": {
+    "title": "Configuration",
+    "order": 10,
+    "action": {
+      "type": "view",
+      "path": "phantun/config"
+    }
+  },
+  "admin/services/phantun/status": {
+    "title": "Status",
+    "order": 20,
+    "action": {
+      "type": "view",
+      "path": "phantun/status"
+    }
+  }
+}

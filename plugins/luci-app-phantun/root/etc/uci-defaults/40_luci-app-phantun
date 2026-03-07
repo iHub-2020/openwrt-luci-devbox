@@ -1,0 +1,40 @@
+#!/bin/sh
+
+[ -f /etc/config/phantun ] && exit 0
+
+cat > /etc/config/phantun <<'EOF'
+config general 'general'
+	option enabled '0'
+	option log_level 'info'
+
+config client
+	option enabled '0'
+	option alias 'WireGuard Client'
+	option local_addr '127.0.0.1'
+	option local_port '51820'
+	option remote_addr '158.101.158.68'
+	option remote_port '5245'
+	option tun_name ''
+	option tun_local '192.168.200.1'
+	option tun_peer '192.168.200.2'
+	option ipv4_only '0'
+	option tun_local6 'fcc8::1'
+	option tun_peer6 'fcc8::2'
+	option handshake_packet ''
+
+config server
+	option enabled '0'
+	option alias 'VPS Server'
+	option local_port '5245'
+	option remote_addr '127.0.0.1'
+	option remote_port '29900'
+	option tun_name ''
+	option tun_local '192.168.201.1'
+	option tun_peer '192.168.201.2'
+	option ipv4_only '0'
+	option tun_local6 'fcc9::1'
+	option tun_peer6 'fcc9::2'
+	option handshake_packet ''
+EOF
+
+exit 0

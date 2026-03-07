@@ -1,0 +1,21 @@
+#!/bin/sh
+# Phantun firewall hook - ensures iptables rules are synced
+# Triggers on: firewall reload, system boot, or manual firewall restart
+
+. /lib/functions.sh
+
+config_load phantun
+
+# Check if service is enabled globally
+config_get_bool enabled general enabled 0
+[ "$enabled" -eq 0 ] && exit 0
+
+config_get_bool keep_rule general keep_rule 0
+
+# Always trigger reload on firewall events when service is enabled
+# This ensures iptables rules are re-applied if firewall clears them
+if [ "$keep_rule" -eq 1 ] || [ "$ACTION" = "boot" ]; then
+    # Small delay to ensure firewall rules are fully initialized
+    sleep 1
+    /etc/init.d/phantun reload
+fi

@@ -1,0 +1,429 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2024 iHub-2020
+#
+# phantun init script for OpenWrt
+# Phantun is a lightweight UDP to FakeTCP obfuscator
+# 
+# Key Features:
+#   - TUN interface management
+#   - Automatic iptables rule management
+#   - IPv4 and IPv6 support
+#   - Multi-instance support
+#
+# Version: 1.0.0
+# Last Updated: 2026-01-31
+#
+# Changelog:
+#   v1.0.0 - Initial release for phantun
+#          - TUN interface configuration
+#          - Automatic iptables NAT/DNAT rules
+#          - Support for both client and server modes
+
+START=90
+STOP=10
+USE_PROCD=1
+
+CLIENT_PROG=/usr/bin/phantun_client
+SERVER_PROG=/usr/bin/phantun_server
+CONFIG_FILE=/etc/config/phantun
+
+# Default iptables command (overridden by config)
+IPT="iptables"
+IP6T="ip6tables"
+
+load_global_settings() {
+	local wait_lock
+	config_load phantun
+	config_get_bool wait_lock general wait_lock 0
+	
+	if [ "$wait_lock" -eq 1 ]; then
+		IPT="iptables -w"
+		IP6T="ip6tables -w"
+	fi
+}
+
+# Validate required parameters for client
+validate_client_section() {
+	local section="$1"
+	local local_addr local_port remote_addr remote_port
+	
+	config_get local_addr "$section" local_addr
+	config_get local_port "$section" local_port
+	config_get remote_addr "$section" remote_addr
+	config_get remote_port "$section" remote_port
+	
+	if [ -z "$local_addr" ] || [ -z "$local_port" ]; then
+		logger -t phantun -p daemon.err "[$section] Missing local_addr or local_port"
+		return 1
+	fi
+	
+	if [ -z "$remote_addr" ] || [ -z "$remote_port" ]; then
+		logger -t phantun -p daemon.err "[$section] Missing remote_addr or remote_port"
+		return 1
+	fi
+	
+	return 0
+}
+
+# Validate required parameters for server
+validate_server_section() {
+	local section="$1"
+	local local_port remote_addr remote_port
+	
+	config_get local_port "$section" local_port
+	config_get remote_addr "$section" remote_addr
+	config_get remote_port "$section" remote_port
+	
+	if [ -z "$local_port" ]; then
+		logger -t phantun -p daemon.err "[$section] Missing local_port"
+		return 1
+	fi
+	
+	if [ -z "$remote_addr" ] || [ -z "$remote_port" ]; then
+		logger -t phantun -p daemon.err "[$section] Missing remote_addr or remote_port"
+		return 1
+	fi
+	
+	return 0
+}
+
+# Setup iptables rules for client (MASQUERADE)
+setup_client_iptables() {
+	local tun_peer="$1"
+	local tun_peer6="$2"
+	local ipv4_only="$3"
+	
+	# IPv4 MASQUERADE rule
+	if [ -n "$tun_peer" ]; then
+		$IPT -t nat -C POSTROUTING -s "$tun_peer/32" -m comment --comment "phantun" -j MASQUERADE 2>/dev/null || \
+		$IPT -t nat -A POSTROUTING -s "$tun_peer/32" -m comment --comment "phantun" -j MASQUERADE
+		logger -t phantun -p daemon.info "Added IPv4 MASQUERADE rule for $tun_peer"
+	fi
+	
+	# IPv6 MASQUERADE rule
+	if [ "$ipv4_only" != "1" ] && [ -n "$tun_peer6" ]; then
+		$IP6T -t nat -C POSTROUTING -s "$tun_peer6/128" -m comment --comment "phantun" -j MASQUERADE 2>/dev/null || \
+		$IP6T -t nat -A POSTROUTING -s "$tun_peer6/128" -m comment --comment "phantun" -j MASQUERADE
+		logger -t phantun -p daemon.info "Added IPv6 MASQUERADE rule for $tun_peer6"
+	fi
+}
+
+# Setup iptables rules for server (DNAT)
+setup_server_iptables() {
+	local local_port="$1"
+	local tun_peer="$2"
+	local tun_peer6="$3"
+	local ipv4_only="$4"
+	
+	# IPv4 DNAT rule
+	if [ -n "$tun_peer" ] && [ -n "$local_port" ]; then
+		$IPT -t nat -C PREROUTING -p tcp --dport "$local_port" -m comment --comment "phantun" -j DNAT --to-destination "$tun_peer:$local_port" 2>/dev/null || \
+		$IPT -t nat -A PREROUTING -p tcp --dport "$local_port" -m comment --comment "phantun" -j DNAT --to-destination "$tun_peer:$local_port"
+		logger -t phantun -p daemon.info "Added IPv4 DNAT rule: port $local_port -> $tun_peer:$local_port"
+	fi
+	
+	# IPv6 DNAT rule
+	if [ "$ipv4_only" != "1" ] && [ -n "$tun_peer6" ] && [ -n "$local_port" ]; then
+		$IP6T -t nat -C PREROUTING -p tcp --dport "$local_port" -m comment --comment "phantun" -j DNAT --to-destination "[$tun_peer6]:$local_port" 2>/dev/null || \
+		$IP6T -t nat -A PREROUTING -p tcp --dport "$local_port" -m comment --comment "phantun" -j DNAT --to-destination "[$tun_peer6]:$local_port"
+		logger -t phantun -p daemon.info "Added IPv6 DNAT rule: port $local_port -> [$tun_peer6]:$local_port"
+	fi
+}
+
+# Cleanup iptables rules for client
+cleanup_client_iptables() {
+	local section="$1"
+	local tun_peer tun_peer6 ipv4_only
+
+    # Load config to get IPs (Fix: previously treated section name as IP)
+    config_get tun_peer "$section" tun_peer "192.168.200.2"
+    config_get tun_peer6 "$section" tun_peer6 "fcc8::2"
+    config_get ipv4_only "$section" ipv4_only "0"
+	
+	# Remove IPv4 MASQUERADE rule (Exact match with comment)
+	if [ -n "$tun_peer" ]; then
+		$IPT -t nat -D POSTROUTING -s "$tun_peer/32" -m comment --comment "phantun" -j MASQUERADE 2>/dev/null
+		logger -t phantun -p daemon.info "Removed IPv4 MASQUERADE rule for $tun_peer"
+	fi
+	
+	# Remove IPv6 MASQUERADE rule
+	if [ "$ipv4_only" != "1" ] && [ -n "$tun_peer6" ]; then
+		$IP6T -t nat -D POSTROUTING -s "$tun_peer6/128" -m comment --comment "phantun" -j MASQUERADE 2>/dev/null
+		logger -t phantun -p daemon.info "Removed IPv6 MASQUERADE rule for $tun_peer6"
+	fi
+}
+
+# Cleanup iptables rules for server
+cleanup_server_iptables() {
+	local section="$1"
+	local local_port tun_peer tun_peer6 ipv4_only
+
+    config_get local_port "$section" local_port
+    config_get tun_peer "$section" tun_peer "192.168.201.2"
+    config_get tun_peer6 "$section" tun_peer6 "fcc9::2"
+    config_get ipv4_only "$section" ipv4_only "0"
+	
+	# Remove IPv4 DNAT rule
+	if [ -n "$tun_peer" ] && [ -n "$local_port" ]; then
+		$IPT -t nat -D PREROUTING -p tcp --dport "$local_port" -m comment --comment "phantun" -j DNAT --to-destination "$tun_peer:$local_port" 2>/dev/null
+		logger -t phantun -p daemon.info "Removed IPv4 DNAT rule: port $local_port -> $tun_peer:$local_port"
+	fi
+	
+	# Remove IPv6 DNAT rule
+	if [ "$ipv4_only" != "1" ] && [ -n "$tun_peer6" ] && [ -n "$local_port" ]; then
+		$IP6T -t nat -D PREROUTING -p tcp --dport "$local_port" -m comment --comment "phantun" -j DNAT --to-destination "[$tun_peer6]:$local_port" 2>/dev/null
+		logger -t phantun -p daemon.info "Removed IPv6 DNAT rule: port $local_port -> [$tun_peer6]:$local_port"
+	fi
+}
+
+# Start a client instance
+start_client() {
+	local section="$1"
+	local enabled local_addr local_port remote_addr remote_port
+	local tun_name tun_local tun_peer ipv4_only tun_local6 tun_peer6
+	local handshake_packet alias
+	
+	# Check enabled status
+	config_get enabled "$section" enabled '0'
+	if [ "$enabled" != "1" ]; then
+		return 0
+	fi
+	
+	# Validate before starting
+	validate_client_section "$section" || {
+		logger -t phantun -p daemon.err "[$section] Client validation failed, skipping."
+		return 1
+	}
+	
+	# Get parameters
+	config_get alias "$section" alias "$section"
+	config_get local_addr "$section" local_addr
+	config_get local_port "$section" local_port
+	config_get remote_addr "$section" remote_addr
+	config_get remote_port "$section" remote_port
+	config_get tun_name "$section" tun_name ""
+	config_get tun_local "$section" tun_local "192.168.200.1"
+	config_get tun_peer "$section" tun_peer "192.168.200.2"
+	config_get ipv4_only "$section" ipv4_only "0"
+	config_get tun_local6 "$section" tun_local6 "fcc8::1"
+	config_get tun_peer6 "$section" tun_peer6 "fcc8::2"
+	config_get handshake_packet "$section" handshake_packet
+	
+	# Setup iptables rules
+	setup_client_iptables "$tun_peer" "$tun_peer6" "$ipv4_only"
+	
+	# Build command line
+	procd_open_instance "client_$section"
+	procd_set_param command "$CLIENT_PROG"
+	procd_append_param command --local "${local_addr}:${local_port}"
+	procd_append_param command --remote "${remote_addr}:${remote_port}"
+	
+	[ -n "$tun_name" ] && procd_append_param command --tun "$tun_name"
+	procd_append_param command --tun-local "$tun_local"
+	procd_append_param command --tun-peer "$tun_peer"
+	
+	if [ "$ipv4_only" = "1" ]; then
+		procd_append_param command --ipv4-only
+	else
+		procd_append_param command --tun-local6 "$tun_local6"
+		procd_append_param command --tun-peer6 "$tun_peer6"
+	fi
+	
+	[ -n "$handshake_packet" ] && [ -f "$handshake_packet" ] && \
+		procd_append_param command --handshake-packet "$handshake_packet"
+	
+	# Retry/Respawn Logic (Global setting)
+	local retry_on_error
+	config_get_bool retry_on_error general retry_on_error 0
+	
+	if [ "$retry_on_error" -eq 1 ]; then
+		procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+	fi
+	procd_set_param stderr 1
+	procd_set_param stdout 1
+	procd_set_param pidfile "/var/run/phantun_client_${section}.pid"
+	
+	procd_close_instance
+	
+	logger -t phantun -p daemon.info "Started client [$alias] ${local_addr}:${local_port} -> ${remote_addr}:${remote_port}"
+}
+
+# Start a server instance
+start_server() {
+	local section="$1"
+	local enabled local_port remote_addr remote_port
+	local tun_name tun_local tun_peer ipv4_only tun_local6 tun_peer6
+	local handshake_packet alias
+	
+	# Check enabled status
+	config_get enabled "$section" enabled '0'
+	if [ "$enabled" != "1" ]; then
+		return 0
+	fi
+	
+	# Validate before starting
+	validate_server_section "$section" || {
+		logger -t phantun -p daemon.err "[$section] Server validation failed, skipping."
+		return 1
+	}
+	
+	# Get parameters
+	config_get alias "$section" alias "$section"
+	config_get local_port "$section" local_port
+	config_get remote_addr "$section" remote_addr
+	config_get remote_port "$section" remote_port
+	config_get tun_name "$section" tun_name ""
+	config_get tun_local "$section" tun_local "192.168.201.1"
+	config_get tun_peer "$section" tun_peer "192.168.201.2"
+	config_get ipv4_only "$section" ipv4_only "0"
+	config_get tun_local6 "$section" tun_local6 "fcc9::1"
+	config_get tun_peer6 "$section" tun_peer6 "fcc9::2"
+	config_get handshake_packet "$section" handshake_packet
+	
+	# Setup iptables rules
+	setup_server_iptables "$local_port" "$tun_peer" "$tun_peer6" "$ipv4_only"
+	
+	# Build command line
+	procd_open_instance "server_$section"
+	procd_set_param command "$SERVER_PROG"
+	procd_append_param command --local "$local_port"
+	procd_append_param command --remote "${remote_addr}:${remote_port}"
+	
+	[ -n "$tun_name" ] && procd_append_param command --tun "$tun_name"
+	procd_append_param command --tun-local "$tun_local"
+	procd_append_param command --tun-peer "$tun_peer"
+	
+	if [ "$ipv4_only" = "1" ]; then
+		procd_append_param command --ipv4-only
+	else
+		procd_append_param command --tun-local6 "$tun_local6"
+		procd_append_param command --tun-peer6 "$tun_peer6"
+	fi
+	
+	[ -n "$handshake_packet" ] && [ -f "$handshake_packet" ] && \
+		procd_append_param command --handshake-packet "$handshake_packet"
+	
+	# Retry/Respawn Logic (Global setting)
+	local retry_on_error
+	config_get_bool retry_on_error general retry_on_error 0
+	
+	if [ "$retry_on_error" -eq 1 ]; then
+		procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+	fi
+	procd_set_param stderr 1
+	procd_set_param stdout 1
+	procd_set_param pidfile "/var/run/phantun_server_${section}.pid"
+	
+	procd_close_instance
+	
+	logger -t phantun -p daemon.info "Started server [$alias] :${local_port} -> ${remote_addr}:${remote_port}"
+}
+
+start_service() {
+	local enabled
+	
+	if [ ! -x "$CLIENT_PROG" ] || [ ! -x "$SERVER_PROG" ]; then
+		logger -t phantun -p daemon.err "Binaries not found: $CLIENT_PROG or $SERVER_PROG"
+		return 1
+	fi
+	
+	config_load phantun
+	config_get enabled general enabled '0'
+	
+	if [ "$enabled" != "1" ]; then
+		logger -t phantun -p daemon.info "Service disabled globally"
+		return 0
+	fi
+	
+	load_global_settings
+	
+	# Start all enabled clients and servers
+	config_foreach start_client client
+	config_foreach start_server server
+}
+
+stop_service() {
+	logger -t phantun -p daemon.info "Stopping all phantun instances"
+	
+	# Cleanup iptables rules
+	config_load phantun 2>/dev/null || return 0
+	
+	# Cleanup client rules (Try standard cleanup first)
+	config_foreach cleanup_client_iptables client
+	
+	# Cleanup server rules (Try standard cleanup first)
+	config_foreach cleanup_server_iptables server
+    
+    # Brute Force Cleanup: Remove ANY remaining rules tagged with 'phantun' comment
+    # This handles case where config sections were deleted before stop was called
+    $IPT -t nat -S | grep "comment phantun" | sed 's/-A/-D/' | while read rule; do 
+        $IPT -t nat $rule 2>/dev/null
+    done
+    
+    $IP6T -t nat -S | grep "comment phantun" | sed 's/-A/-D/' | while read rule; do 
+        $IP6T -t nat $rule 2>/dev/null
+    done
+
+    # Fallback Cleanup for legacy rules (without comments) and default subnets
+    # This fixes the "Ghost Rules" issue for existing users
+
+    for ip in 192.168.200 192.168.201; do
+        $IPT -t nat -S | grep "$ip" | grep -v "comment" | sed 's/-A/-D/' | while read rule; do
+            $IPT -t nat $rule 2>/dev/null
+        done
+    done
+}
+
+service_triggers() {
+	procd_add_reload_trigger "phantun"
+    
+    # Optional: Keep Firewall Rules (Reload Phantun when firewall restarts)
+	config_load phantun
+	local keep_rule
+	config_get keep_rule general keep_rule '0'
+	
+	if [ "$keep_rule" = "1" ]; then
+		procd_add_reload_trigger "firewall"
+	fi
+}
+
+reload_service() {
+	stop
+	start
+}
+
+status() {
+	local running=0
+	
+	echo "=== Phantun Status ==="
+	
+	if pgrep -x phantun_client >/dev/null 2>&1; then
+		echo "Phantun clients running:"
+		pgrep -a -x phantun_client
+		running=1
+	else
+		echo "No phantun clients running"
+	fi
+	
+	if pgrep -x phantun_server >/dev/null 2>&1; then
+		echo "Phantun servers running:"
+		pgrep -a -x phantun_server
+		running=1
+	else
+		echo "No phantun servers running"
+	fi
+	
+	echo ""
+	echo "=== TUN Interfaces ==="
+	ip link show | grep -E "tun[0-9]+" || echo "No TUN interfaces found"
+	
+	echo ""
+	echo "=== NAT Rules (phantun related) ==="
+	echo "IPv4 NAT rules:"
+	iptables -t nat -L -n 2>/dev/null | grep -E "MASQUERADE|DNAT.*192\.168\.(200|201)\." || echo "  (none found)"
+	
+	echo "IPv6 NAT rules:"
+	ip6tables -t nat -L -n 2>/dev/null | grep -E "MASQUERADE|DNAT.*fcc[89]::" || echo "  (none found)"
+	
+	return $((1 - running))
+}
