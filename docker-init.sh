@@ -107,16 +107,22 @@ install_pkgs_optional \
 # ----------------------------------------------------------------
 echo "[init] 安装 WireGuard 套件..."
 WG_REQUIRED="wireguard-tools luci-proto-wireguard qrencode"
+WG_FORCE="rpcd-mod-wireguard"
 WG_MISSING=""
 for pkg in $WG_REQUIRED; do
     is_installed "$pkg" || WG_MISSING="$WG_MISSING $pkg"
+done
+for pkg in $WG_FORCE; do
+    is_installed "$pkg" || {
+        available="$(opkg list 2>/dev/null | grep -E "^$pkg -" || true)"
+        [ -n "$available" ] && WG_MISSING="$WG_MISSING $pkg"
+    }
 done
 if [ -n "$WG_MISSING" ]; then
     echo "[init] 安装 WireGuard 必需包(允许缺失 kmod 依赖):$WG_MISSING"
     opkg install --force-depends $WG_MISSING || true
 fi
 install_pkgs_optional \
-    rpcd-mod-wireguard \
     kmod-wireguard \
     luci-app-wireguard \
     luci-i18n-wireguard-zh-cn

@@ -52,6 +52,7 @@ services:
       - ./entrypoint.sh:/entrypoint.sh:ro
       - ./docker-init.sh:/docker-init.sh:ro
       - ./init-luci.sh:/init-luci.sh:ro
+      - ./devbox-selfcheck.sh:/devbox-selfcheck.sh:ro
       - ./config:/config-templates:ro
       - opkg-cache:/var/opkg-lists
 
@@ -62,7 +63,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -S -O /dev/null http://127.0.0.1/cgi-bin/luci/ 2>&1 | grep -Eq 'HTTP/[0-9.]+ (200|302|403)'"
+          "/bin/ash /devbox-selfcheck.sh --health"
         ]
       interval: 30s
       timeout: 10s

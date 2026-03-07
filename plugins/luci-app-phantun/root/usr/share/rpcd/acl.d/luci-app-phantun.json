@@ -19,6 +19,18 @@
         ],
         "/bin/sh": [
           "exec"
+        ],
+        "/sbin/ip": [
+          "exec"
+        ],
+        "/sbin/logread": [
+          "exec"
+        ],
+        "/usr/sbin/iptables-save": [
+          "exec"
+        ],
+        "/usr/sbin/ip6tables-save": [
+          "exec"
         ]
       },
       "ubus": {

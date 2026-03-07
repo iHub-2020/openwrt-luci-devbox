@@ -142,15 +142,28 @@ if [ "$ROLE" = "server" ]; then
     LUCI_JS_VIEW="/www/luci-static/resources/view"
     mkdir -p "$LUCI_CTRL" "$LUCI_VIEW" "$LUCI_MODEL" "$LUCI_JS_VIEW"
 
+    # 仅保留本轮允许的 phantun 前端，先清理越权残留，避免“脚本没加载但运行态还在”。
+    rm -f \
+        /usr/share/luci/menu.d/luci-app-poweroffdevice.json \
+        /usr/share/rpcd/acl.d/luci-app-poweroffdevice.json \
+        /usr/share/luci/menu.d/luci-app-udp-tunnel.json \
+        /usr/share/rpcd/acl.d/luci-app-udp-tunnel.json \
+        /usr/share/luci/menu.d/luci-app-udp-speeder.json \
+        /usr/share/rpcd/acl.d/luci-app-udp-speeder.json 2>/dev/null || true
+    rm -rf \
+        /www/luci-static/resources/view/udp2raw \
+        /www/luci-static/resources/view/udpspeeder \
+        /www/luci-static/resources/view/poweroffdevice 2>/dev/null || true
+
     for plugin_dir in "$PLUGIN_ROOT"/luci-app-*/; do
         [ -d "$plugin_dir" ] || continue
         plugin_name=$(basename "$plugin_dir")
 
         case "$plugin_name" in
-            luci-app-poweroffdevice)
-                rm -f /usr/share/luci/menu.d/luci-app-poweroffdevice.json \
-                      /usr/share/rpcd/acl.d/luci-app-poweroffdevice.json 2>/dev/null || true
-                echo "[plugin] 跳过 $plugin_name（不属于当前 phantun 环境验收范围）"
+            luci-app-phantun)
+                ;;
+            *)
+                echo "[plugin] 跳过 $plugin_name（超出当前 phantun 验收范围）"
                 continue
                 ;;
         esac
@@ -190,6 +203,12 @@ if [ "$ROLE" = "server" ]; then
             cp -r "$plugin_dir/root/." / 2>/dev/null || true
         fi
     done
+
+    if [ -f /etc/uci-defaults/40_luci-app-phantun ] && [ ! -f /etc/config/phantun ]; then
+        echo "[plugin] 初始化 phantun 默认配置"
+        /bin/sh /etc/uci-defaults/40_luci-app-phantun 2>/dev/null || true
+    fi
+
     echo "[plugin] ✅ 插件加载完毕"
 fi
 
@@ -202,13 +221,65 @@ patch_luci_templates_for_devbox() {
 
         # OpenWrt 24.10 在当前 devbox 这种精简/非 procd 完整引导环境里，
         # ubus.call('system', 'board') 可能返回空值，默认模板会在登录页直接 500。
-        # 这里做幂等兼容补丁：空值时退化为 {}，保证 LuCI 登录页可渲染。
+        # 这里做幂等兼容补丁：空值时退化为 {}，并把用户可见品牌稳定回退到 OpenWrt。
         sed -i "s/const boardinfo = ubus.call('system', 'board');/const boardinfo = ubus.call('system', 'board') || {};/" "$f" 2>/dev/null || true
+        sed -i 's#<title>{{ striptags(`${boardinfo.hostname ?? '\''?'\''}${node ? ` - ${node.title}` : '\''''\''}`) }} - LuCI</title>#<title>{{ striptags(`${boardinfo.release?.distribution ?? boardinfo.hostname ?? '\''OpenWrt'\''}${node ? ` - ${node.title}` : '\''''\''}`) }} - LuCI</title>#' "$f" 2>/dev/null || true
+        sed -i 's#<a class="brand" href="/">{{ striptags(boardinfo.hostname ?? '\''?'\'') }}</a>#<a class="brand" href="/">{{ striptags(boardinfo.release?.distribution ?? boardinfo.hostname ?? '\''OpenWrt'\'') }}</a>#' "$f" 2>/dev/null || true
     done
+}
+
+run_startup_selfcheck() {
+    local i
+    [ "$ROLE" = "server" ] || return 0
+    [ -f /devbox-selfcheck.sh ] || return 0
+
+    echo "[selfcheck] 执行启动后自检..."
+    for i in 1 2 3 4 5; do
+        if /bin/ash /devbox-selfcheck.sh --startup; then
+            return 0
+        fi
+        echo "[selfcheck] 第 ${i} 次失败，2s 后重试..."
+        sleep 2
+    done
+
+    echo "[selfcheck] 启动自检失败，保留容器供排障；Docker healthcheck 将继续阻止其进入 healthy。" >&2
+    /bin/ash /devbox-selfcheck.sh --evidence || true
+    return 0
+}
+
+seed_phantun_runtime() {
+    local runtime_root
+    runtime_root="/luci-plugins/phantun/files"
+    [ -d "$runtime_root" ] || return 0
+
+    if [ -f "$runtime_root/usr/bin/phantun_client" ] && [ ! -x /usr/bin/phantun_client ]; then
+        echo "[phantun] 安装 phantun_client 运行时"
+        cp "$runtime_root/usr/bin/phantun_client" /usr/bin/phantun_client
+        chmod 0755 /usr/bin/phantun_client
+    fi
+
+    if [ -f "$runtime_root/usr/bin/phantun_server" ] && [ ! -x /usr/bin/phantun_server ]; then
+        echo "[phantun] 安装 phantun_server 运行时"
+        cp "$runtime_root/usr/bin/phantun_server" /usr/bin/phantun_server
+        chmod 0755 /usr/bin/phantun_server
+    fi
+
+    if [ -f "$runtime_root/phantun.init" ] && [ ! -f /etc/init.d/phantun ]; then
+        echo "[phantun] 安装 init 脚本"
+        cp "$runtime_root/phantun.init" /etc/init.d/phantun
+        chmod 0755 /etc/init.d/phantun
+    fi
+
+    if [ -f "$runtime_root/phantun.upgrade" ] && [ ! -f /usr/share/phantun/phantun.upgrade ]; then
+        mkdir -p /usr/share/phantun
+        cp "$runtime_root/phantun.upgrade" /usr/share/phantun/phantun.upgrade
+        chmod 0755 /usr/share/phantun/phantun.upgrade
+    fi
 }
 
 if [ "$ROLE" = "server" ]; then
     patch_luci_templates_for_devbox
+    seed_phantun_runtime
 fi
 
 # ================================================================
@@ -216,7 +287,7 @@ fi
 # ================================================================
 echo "[service] 启动服务..."
 
-# ubusd / rpcd
+# ubusd / procd / rpcd
 UBUS_DIR="/var/run/ubus"
 UBUS_SOCK="$UBUS_DIR/ubus.sock"
 mkdir -p "$UBUS_DIR"
@@ -224,6 +295,12 @@ if [ -x /sbin/ubusd ]; then
     ubusd -s "$UBUS_SOCK" &
     sleep 1
     ln -snf "$UBUS_SOCK" /var/run/ubus.sock
+fi
+
+# procd 提供 system ubus 对象；没有它，System 页面和 header board 信息都会残缺。
+if [ -x /sbin/procd ] && ! pgrep -x procd >/dev/null 2>&1; then
+    /sbin/procd -s "$UBUS_SOCK" &
+    sleep 2
 fi
 
 if [ -x /sbin/rpcd ]; then
@@ -265,7 +342,12 @@ if [ "$ROLE" = "server" ]; then
 
     echo "[service] ✅ 就绪 (root/password)"
     echo "========================================================"
-    exec "$@"
+
+    "$@" &
+    UHTTPD_PID=$!
+    sleep 2
+    run_startup_selfcheck
+    wait "$UHTTPD_PID"
 else
     # peer 模式：没有 LuCI，用 tail 保持容器存活
     echo "[service] peer 容器就绪（无 LuCI，仅 SSH 端口 2223）"

@@ -87,17 +87,18 @@ if [ "$REINIT" = "1" ]; then
 fi
 
 # ================================================================
-# 等待 LuCI Web 界面就绪
+# 等待 LuCI Web 界面与运行态自检都就绪
 # ================================================================
-echo -e "${YELLOW}⏳ 等待 LuCI Web 就绪...${NC}"
+echo -e "${YELLOW}⏳ 等待 LuCI Web 与运行态自检就绪...${NC}"
 elapsed=0
-until docker exec "$PRIMARY_CONTAINER" sh -lc "wget -S -O /dev/null http://127.0.0.1/cgi-bin/luci/ 2>&1 | grep -Eq 'HTTP/[0-9.]+ (200|302|403)'" > /dev/null 2>&1; do
+until docker exec "$PRIMARY_CONTAINER" sh -lc "/bin/ash /devbox-selfcheck.sh --health" > /dev/null 2>&1; do
     sleep "$INTERVAL"
     elapsed=$((elapsed + INTERVAL))
     printf "  已等待 %ds...\r" "$elapsed"
     if [ "$elapsed" -ge "$TIMEOUT" ]; then
-        echo -e "${RED}❌ LuCI 未在 ${TIMEOUT}s 内就绪，请检查日志：${NC}"
+        echo -e "${RED}❌ devbox 未在 ${TIMEOUT}s 内通过自检，请检查日志：${NC}"
         echo "  docker logs $PRIMARY_CONTAINER"
+        echo "  docker exec $PRIMARY_CONTAINER /bin/ash /devbox-selfcheck.sh --evidence"
         exit 1
     fi
 done
