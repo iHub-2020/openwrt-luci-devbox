@@ -145,6 +145,16 @@ if [ "$ROLE" = "server" ]; then
     for plugin_dir in "$PLUGIN_ROOT"/luci-app-*/; do
         [ -d "$plugin_dir" ] || continue
         plugin_name=$(basename "$plugin_dir")
+
+        case "$plugin_name" in
+            luci-app-poweroffdevice)
+                rm -f /usr/share/luci/menu.d/luci-app-poweroffdevice.json \
+                      /usr/share/rpcd/acl.d/luci-app-poweroffdevice.json 2>/dev/null || true
+                echo "[plugin] 跳过 $plugin_name（不属于当前 phantun 环境验收范围）"
+                continue
+                ;;
+        esac
+
         echo "[plugin] 加载 $plugin_name"
 
         if [ -d "$plugin_dir/luasrc/controller" ]; then

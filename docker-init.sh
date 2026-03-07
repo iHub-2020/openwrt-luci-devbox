@@ -31,11 +31,44 @@ EOF
 echo "[init] 更新包列表..."
 opkg update 2>&1 | tail -5
 
+is_installed() {
+    local pkg="$1"
+    opkg list-installed | grep -qE "^$pkg -"
+}
+
+install_pkgs_required() {
+    local pkg missing=""
+    for pkg in "$@"; do
+        is_installed "$pkg" || missing="$missing $pkg"
+    done
+
+    [ -n "$missing" ] || return 0
+
+    echo "[init] 安装必需包:$missing"
+    opkg install $missing || return 1
+}
+
+install_pkgs_optional() {
+    local pkg available install_list=""
+    for pkg in "$@"; do
+        if is_installed "$pkg"; then
+            continue
+        fi
+        available="$(opkg list 2>/dev/null | grep -E "^$pkg -" || true)"
+        [ -n "$available" ] && install_list="$install_list $pkg"
+    done
+
+    [ -n "$install_list" ] || return 0
+
+    echo "[init] 安装可选包:$install_list"
+    opkg install $install_list || true
+}
+
 # ----------------------------------------------------------------
 # 基础系统包（SSH + LuCI Web 界面）
 # ----------------------------------------------------------------
 echo "[init] 安装基础系统包..."
-opkg install \
+install_pkgs_required \
     uhttpd uhttpd-mod-ubus uhttpd-mod-ucode uhttpd-mod-lua \
     rpcd rpcd-mod-rpcsys rpcd-mod-file \
     luci-base luci-mod-admin-full \
@@ -45,14 +78,13 @@ opkg install \
     luci-i18n-firewall-zh-cn \
     openssh-server \
     curl wget-ssl \
-    bash kmod-nft-core \
-    2>&1 | grep -E "(Installing|Configuring|ERROR|error)" || true
+    bash kmod-nft-core
 
 # ----------------------------------------------------------------
 # 网络工具（网络层插件开发必备）
 # ----------------------------------------------------------------
 echo "[init] 安装网络工具..."
-opkg install \
+install_pkgs_optional \
     ip-full \
     iptables iptables-mod-extra iptables-mod-conntrack-extra \
     ip6tables \
@@ -63,8 +95,7 @@ opkg install \
     socat \
     tcpdump \
     bind-dig \
-    iproute2 \
-    2>&1 | grep -E "(Installing|Configuring|ERROR|error)" || true
+    iproute2
 
 # ----------------------------------------------------------------
 # WireGuard 完整套件
@@ -75,46 +106,64 @@ opkg install \
 #   qrencode        : WireGuard 配置二维码生成
 # ----------------------------------------------------------------
 echo "[init] 安装 WireGuard 套件..."
-opkg install \
-    wireguard-tools \
+WG_REQUIRED="wireguard-tools luci-proto-wireguard qrencode"
+WG_MISSING=""
+for pkg in $WG_REQUIRED; do
+    is_installed "$pkg" || WG_MISSING="$WG_MISSING $pkg"
+done
+if [ -n "$WG_MISSING" ]; then
+    echo "[init] 安装 WireGuard 必需包(允许缺失 kmod 依赖):$WG_MISSING"
+    opkg install --force-depends $WG_MISSING || true
+fi
+install_pkgs_optional \
+    rpcd-mod-wireguard \
     kmod-wireguard \
     luci-app-wireguard \
-    luci-proto-wireguard \
-    luci-i18n-wireguard-zh-cn \
-    qrencode \
-    2>&1 | grep -E "(Installing|Configuring|ERROR|error)" || true
+    luci-i18n-wireguard-zh-cn
 
 # ----------------------------------------------------------------
 # UDP 隧道/伪装相关内核模块（phantun/udp2raw/udpspeeder 的依赖）
 # ----------------------------------------------------------------
 echo "[init] 安装 UDP 隧道相关模块..."
-opkg install \
+install_pkgs_optional \
     kmod-tun \
     kmod-ipt-tproxy \
     kmod-ipt-nat \
     kmod-ipt-conntrack \
-    kmod-nf-tproxy \
-    2>&1 | grep -E "(Installing|Configuring|ERROR|error)" || true
+    kmod-nf-tproxy
 
 # ----------------------------------------------------------------
 # PPPoE 相关包（模拟 wan 接口）
 # ----------------------------------------------------------------
 echo "[init] 安装 PPPoE 相关包..."
-opkg install \
+install_pkgs_required \
     ppp ppp-mod-pppoe \
-    luci-proto-ppp \
-    2>&1 | grep -E "(Installing|Configuring|ERROR|error)" || true
+    luci-proto-ppp
 
 # ----------------------------------------------------------------
 # 开发调试辅助工具
 # ----------------------------------------------------------------
 echo "[init] 安装调试工具..."
-opkg install \
+install_pkgs_optional \
     strace \
     file \
     less \
-    logread \
-    2>&1 | grep -E "(Installing|Configuring|ERROR|error)" || true
+    logread
+
+# ----------------------------------------------------------------
+# 关键运行时验收（WireGuard / LuCI 协议支持）
+# ----------------------------------------------------------------
+for req in wireguard-tools luci-proto-wireguard qrencode; do
+    if ! is_installed "$req"; then
+        echo "[init] ERROR: required package missing after install: $req" >&2
+        exit 1
+    fi
+done
+
+if ! command -v wg >/dev/null 2>&1; then
+    echo "[init] ERROR: wg command missing after install" >&2
+    exit 1
+fi
 
 # ----------------------------------------------------------------
 # 关闭 LuCI 代码缓存（开发模式：修改即生效）
