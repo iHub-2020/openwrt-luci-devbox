@@ -12,6 +12,8 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=luci-app-phantun
 PKG_VERSION:=1.0.0
 PKG_RELEASE:=1
+# 显式固定 i18n 包版本，避免在 SDK/非 git 上下文中退化成 unknown
+PKG_PO_VERSION:=$(PKG_VERSION)-$(PKG_RELEASE)
 
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=iHub-2020
