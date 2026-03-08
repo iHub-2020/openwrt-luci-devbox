@@ -1,19 +1,13 @@
 /**
- * Copyright (C) 2026 iHub-2020
- * 
- * LuCI Phantun Manager - Configuration Page
- * Complete configuration interface for Phantun UDP obfuscator
- * 
- * Features:
- * - Multi-instance support (Client & Server modes)
- * - Tabbed interface (Basic/Advanced) for cleaner UI
- * - TUN interface configuration
- * - Input validation with safety checks
- * - Automatic iptables rule management
- * 
- * @module luci-app-phantun/config
- * @version 1.0.0
- * @date 2026-01-31
+ * 标题: phantun/config.js
+ * 作者: reyan
+ * 日期: 2026-03-08
+ * 版本: 1.1.0
+ * 描述: LuCI Phantun 配置页，负责客户端/服务端实例管理、导入导出与服务控制。
+ * 最近三次更新:
+ *   - 2026-03-08: 修复 Add Client / Add Server 产生未保存 ghost instance 的问题。
+ *   - 2026-03-08: 优化 Save / Reset 前对临时 section 的清理，避免脏 UCI 状态被提交。
+ *   - 2026-03-08: 保留原有导入导出、服务控制与网格配置逻辑。
  */
 
 'use strict';
@@ -57,6 +51,108 @@ return view.extend({
         var installWarning = (!clientInstalled && !serverInstalled);
 
         var m, s, o;
+        var transientSections = Object.create(null);
+
+        var TRANSIENT_FLAG = '_transient';
+
+        var removeTransientSection = function (section_id) {
+            if (!transientSections[section_id])
+                return;
+
+            try {
+                uci.remove('phantun', section_id);
+            } catch (e) { }
+
+            if (section_id === m.addedSection)
+                delete m.addedSection;
+
+            delete transientSections[section_id];
+        };
+
+        var confirmTransientSection = function (section_id) {
+            try {
+                uci.unset('phantun', section_id, TRANSIENT_FLAG);
+            } catch (e) { }
+
+            if (section_id === m.addedSection)
+                delete m.addedSection;
+
+            delete transientSections[section_id];
+        };
+
+        var cleanupTransientSections = function () {
+            Object.keys(transientSections).forEach(removeTransientSection);
+        };
+
+        var pruneIncompleteSections = function () {
+            uci.sections('phantun').forEach(function (section) {
+                var type = section['.type'];
+                var name = section['.name'];
+
+                if ((section[TRANSIENT_FLAG] || transientSections[name]) &&
+                    (type === 'client' || type === 'server')) {
+                    uci.remove('phantun', name);
+                    delete transientSections[name];
+                    return;
+                }
+
+                if (type === 'client' && (!section.remote_addr || !section.remote_port)) {
+                    if ((section.alias || '').trim() === '' || /^New Client$/i.test(section.alias || ''))
+                        uci.remove('phantun', name);
+                }
+
+                if (type === 'server' && (!section.local_port || !section.remote_addr || !section.remote_port)) {
+                    if ((section.alias || '').trim() === '' || /^New Server$/i.test(section.alias || ''))
+                        uci.remove('phantun', name);
+                }
+            });
+        };
+
+        var openTransientSectionModal = function (grid, type, defaults) {
+            var section_id = uci.add('phantun', type);
+            var confirmed = false;
+
+            Object.keys(defaults).forEach(function (key) {
+                uci.set('phantun', section_id, key, defaults[key]);
+            });
+            uci.set('phantun', section_id, TRANSIENT_FLAG, '1');
+
+            m.addedSection = section_id;
+
+            transientSections[section_id] = true;
+
+            var observer = new MutationObserver(function () {
+                var modal = document.querySelector('.modal');
+
+                if (!modal) {
+                    observer.disconnect();
+                    if (!confirmed)
+                        removeTransientSection(section_id);
+                    return;
+                }
+
+                var confirmBtn = modal.querySelector('.cbi-button-positive, .cbi-button-apply');
+                if (confirmBtn && !confirmBtn.dataset.phantunTransientBound) {
+                    confirmBtn.dataset.phantunTransientBound = '1';
+                    confirmBtn.addEventListener('click', function () {
+                        confirmed = true;
+                        confirmTransientSection(section_id);
+                    }, { once: true });
+                }
+
+                var cancelBtn = modal.querySelector('.button-row > button:first-child, .cbi-button-neutral, .cbi-button-reset');
+                if (cancelBtn && !cancelBtn.dataset.phantunTransientCancelBound) {
+                    cancelBtn.dataset.phantunTransientCancelBound = '1';
+                    cancelBtn.addEventListener('click', function () {
+                        if (!confirmed)
+                            removeTransientSection(section_id);
+                    }, { once: true });
+                }
+            });
+
+            observer.observe(document.body, { childList: true, subtree: true });
+            return grid.renderMoreOptionsModal(section_id);
+        };
 
         m = new form.Map('phantun', _('TCP Tunnel Configuration'),
             _('TCP Tunnel (Phantun) is a lightweight UDP to TCP obfuscator. It creates TUN interfaces and requires proper iptables NAT rules. ' +
@@ -471,17 +567,17 @@ return view.extend({
                 'class': 'cbi-button cbi-button-add',
                 'title': _('Add server instance'),
                 'click': ui.createHandlerFn(this, function () {
-                    var section_id = uci.add('phantun', 'server');
-                    uci.set('phantun', section_id, 'enabled', '1');
-                    uci.set('phantun', section_id, 'local_port', '4567');
-                    uci.set('phantun', section_id, 'remote_addr', '127.0.0.1');
-                    uci.set('phantun', section_id, 'remote_port', '51820');
-                    uci.set('phantun', section_id, 'tun_local', '192.168.201.1');
-                    uci.set('phantun', section_id, 'tun_peer', '192.168.201.2');
-                    uci.set('phantun', section_id, 'ipv4_only', '0');
-                    uci.set('phantun', section_id, 'tun_local6', 'fcc9::1');
-                    uci.set('phantun', section_id, 'tun_peer6', 'fcc9::2');
-                    return this.renderMoreOptionsModal(section_id);
+                    return openTransientSectionModal(this, 'server', {
+                        enabled: '1',
+                        local_port: '4567',
+                        remote_addr: '127.0.0.1',
+                        remote_port: '51820',
+                        tun_local: '192.168.201.1',
+                        tun_peer: '192.168.201.2',
+                        ipv4_only: '0',
+                        tun_local6: 'fcc9::1',
+                        tun_peer6: 'fcc9::2'
+                    });
                 })
             }, _('Add Server'));
 
@@ -611,16 +707,16 @@ return view.extend({
                 'class': 'cbi-button cbi-button-add',
                 'title': _('Add client instance'),
                 'click': ui.createHandlerFn(this, function () {
-                    var section_id = uci.add('phantun', 'client');
-                    uci.set('phantun', section_id, 'enabled', '1');
-                    uci.set('phantun', section_id, 'local_addr', '127.0.0.1');
-                    uci.set('phantun', section_id, 'local_port', '51820');
-                    uci.set('phantun', section_id, 'tun_local', '192.168.200.1');
-                    uci.set('phantun', section_id, 'tun_peer', '192.168.200.2');
-                    uci.set('phantun', section_id, 'ipv4_only', '0');
-                    uci.set('phantun', section_id, 'tun_local6', 'fcc8::1');
-                    uci.set('phantun', section_id, 'tun_peer6', 'fcc8::2');
-                    return this.renderMoreOptionsModal(section_id);
+                    return openTransientSectionModal(this, 'client', {
+                        enabled: '1',
+                        local_addr: '127.0.0.1',
+                        local_port: '51820',
+                        tun_local: '192.168.200.1',
+                        tun_peer: '192.168.200.2',
+                        ipv4_only: '0',
+                        tun_local6: 'fcc8::1',
+                        tun_peer6: 'fcc8::2'
+                    });
                 })
             }, _('Add Client'));
 
@@ -740,14 +836,28 @@ return view.extend({
         o.optional = true;
         o.modalonly = true;
 
-        // ==================== Override Save & Apply ====================
-        m.handleSaveApply = function (ev, mode) {
-            return this.save(function () {
+        // ==================== Override Save / Reset On View Level ====================
+        this.handleSave = function () {
+            cleanupTransientSections();
+            pruneIncompleteSections();
+
+            return m.save(null, true).then(function () {
+                ui.addNotification(null, E('p', _('Configuration saved successfully')), 'info');
+                setTimeout(function () { window.location.reload(); }, 800);
+            });
+        };
+
+        this.handleSaveApply = function (ev, mode) {
+            cleanupTransientSections();
+            pruneIncompleteSections();
+
+            return m.save(null, true).then(function () {
                 ui.showModal(_('Applying Configuration'), [
                     E('p', { 'class': 'spinning' }, _('Saving configuration...'))
                 ]);
 
-                var enabled = uci.get('phantun', uci.sections('phantun', 'general')[0]['.name'], 'enabled');
+                var general = uci.sections('phantun', 'general')[0];
+                var enabled = general ? uci.get('phantun', general['.name'], 'enabled') : '0';
                 var action = enabled === '1' ? 'restart' : 'stop';
 
                 return callInitAction('phantun', action).then(function () {
@@ -761,6 +871,16 @@ return view.extend({
             });
         };
 
+        this.handleReset = function () {
+            cleanupTransientSections();
+            pruneIncompleteSections();
+            uci.unload('phantun');
+
+            return uci.load('phantun').then(function () {
+                window.location.reload();
+            });
+        };
+
         // ==================== Modify Reset Button After Render ====================
         var originalRender = m.render.bind(m);
         m.render = function () {
@@ -770,6 +890,8 @@ return view.extend({
             var handleResetClick = function (ev) {
                 ev.preventDefault();
                 ev.stopPropagation();
+                cleanupTransientSections();
+                pruneIncompleteSections();
 
                 ui.showModal(_('Reset Configuration'), [
                     E('p', {}, _('Are you sure you want to reset all TCP tunnel configurations?')),
@@ -863,7 +985,7 @@ return view.extend({
                     resetBtn.classList.remove('cbi-button-positive', 'cbi-button-negative');//, 'cbi-button-neutral');
 
                     // Set text and style for reset button
-                    resetBtn.textContent = '复位';
+                    resetBtn.textContent = _('Reset');
                     // resetBtn.classList.add('cbi-button-neutral');
                     resetBtn.title = _('Reset all configurations to defaults');
 
@@ -893,7 +1015,7 @@ return view.extend({
             return mapEl;
         };
 
-        return m.render().then(function(mapEl) {
+        return m.render().then(function (mapEl) {
             if (!installWarning) {
                 return mapEl;
             }

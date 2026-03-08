@@ -96,13 +96,11 @@ fi
 ip link set wg0 up 2>/dev/null || true
 ip addr add "$WG_ADDR" dev wg0 2>/dev/null || true
 
-# ── pppoe-wan（只有 server 模式需要模拟 WAN）──
-if [ "$ROLE" = "server" ]; then
-    if ! ip link show pppoe-wan > /dev/null 2>&1; then
-        ip link add dev pppoe-wan type dummy 2>/dev/null || true
-    fi
-    ip link set pppoe-wan up 2>/dev/null || true
+# ── pppoe-wan（两种角色都创建，避免 peer 抢占 Docker 管理面的 eth0）──
+if ! ip link show pppoe-wan > /dev/null 2>&1; then
+    ip link add dev pppoe-wan type dummy 2>/dev/null || true
 fi
+ip link set pppoe-wan up 2>/dev/null || true
 
 # ── utun（两种角色都需要，phantun/udp2raw 使用）──
 if ! ip link show utun > /dev/null 2>&1; then
@@ -122,18 +120,19 @@ if [ "$ROLE" = "server" ]; then
     uci set network.lan.ipaddr='192.168.1.1'
     uci set network.lan.netmask='255.255.255.0'
 
-    uci -q set network.wan=interface
-    uci set network.wan.proto='pppoe'
-    # 不要接管 Docker 分配给容器管理面的 eth0，否则会打断宿主机 -> 容器端口映射。
-    # 用我们自己创建的 dummy 设备承载 PPPoE 测试语义，保留 UI/协议对象，又不影响 LuCI/SSH 暴露。
-    uci set network.wan.device='pppoe-wan'
-    uci set network.wan.username='test@isp.example'
-    uci set network.wan.password='testpassword'
-
-    uci -q set network.wan_6=interface
-    uci set network.wan_6.proto='dhcpv6'
-    uci set network.wan_6.device='@wan'
 fi
+
+uci -q set network.wan=interface
+uci set network.wan.proto='pppoe'
+# 不要接管 Docker 分配给容器管理面的 eth0，否则会打断宿主机 -> 容器端口映射。
+# dual 模式下 peer 也必须避开 eth0，否则会失去 172.31.0.0/24 对打链路。
+uci set network.wan.device='pppoe-wan'
+uci set network.wan.username='test@isp.example'
+uci set network.wan.password='testpassword'
+
+uci -q set network.wan_6=interface
+uci set network.wan_6.proto='dhcpv6'
+uci set network.wan_6.device='@wan'
 
 # wg0 两个角色都配置
 WG_PRIVKEY=$(wg genkey 2>/dev/null || echo "PLACEHOLDER_KEY=")

@@ -184,7 +184,7 @@ return view.extend({
                     });
 
                     // Add highlighted clear marker at the beginning of filtered logs
-                    var clearMarker = '=== Logs Cleared (' + lastClearTime.toLocaleString() + ') ===';
+                    var clearMarker = _('=== Logs Cleared (%s) ===').format(lastClearTime.toLocaleString());
                     lines.unshift(clearMarker);
                 }
 
@@ -240,7 +240,7 @@ return view.extend({
                 return md5s;
             })
             .catch(function (err) {
-                return { error: err.message || 'Unknown error' };
+                return { error: err.message || _('Unknown error') };
             });
     },
 
@@ -406,7 +406,7 @@ return view.extend({
                 E('div', { 'style': 'display: flex; align-items: center; padding: 10px 0;' }, [
                     E('div', { 'style': 'width: 150px; font-weight: bold;' }, _('Service Status:')),
                     E('div', { 'id': 'service-status-text', 'style': 'font-weight: bold; color: ' + statusColor + ';' },
-                        statusText + (instanceCount > 0 ? ' (' + instanceCount + ' instances)' : ''))
+                        statusText + (instanceCount > 0 ? ' (' + instanceCount + _(' instances') + ')' : ''))
                 ])
             ]),
 
@@ -435,9 +435,9 @@ return view.extend({
                     E('div', { 'style': 'font-weight: bold;' }, _('Core Binary:')),
                     E('div', { 'id': 'diag-binary' }, md5s.error ?
                         E('span', { 'style': 'color: #d9534f;' }, '❌ ' + md5s.error) :
-                        E('span', { 'style': 'color: #5cb85c;' }, '✓ Verified (' +
-                            (md5s.phantun_client ? 'Client: ' + md5s.phantun_client.substring(0, 8) + '... ' : '') +
-                            (md5s.phantun_server ? 'Server: ' + md5s.phantun_server.substring(0, 8) + '...' : '') + ')')
+                        E('span', { 'style': 'color: #5cb85c;' }, _('✓ Verified (') +
+                            (md5s.phantun_client ? _('Client: ') + md5s.phantun_client.substring(0, 8) + '... ' : '') +
+                            (md5s.phantun_server ? _('Server: ') + md5s.phantun_server.substring(0, 8) + '...' : '') + ')')
                     ),
 
                     E('div', { 'style': 'font-weight: bold;' }, _('TUN Interfaces:')),
@@ -557,13 +557,13 @@ return view.extend({
             if (logStatusEl) {
                 // Set initial timestamp
                 var now = new Date();
-                var timeStr = now.toLocaleTimeString('en-US', {
+                var timeStr = now.toLocaleTimeString(undefined, {
                     hour: 'numeric',
                     minute: '2-digit',
                     second: '2-digit',
                     hour12: true
                 });
-                logStatusEl.textContent = 'Last updated: ' + timeStr;
+                logStatusEl.textContent = _('Last updated: %s').format(timeStr);
                 logStatusEl.style.color = '#888';
 
                 // Start polling for logs
@@ -629,7 +629,7 @@ return view.extend({
         var statusEl = container.querySelector('#service-status-text');
         if (statusEl) {
             statusEl.style.color = statusColor;
-            statusEl.textContent = statusText + (instanceCount > 0 ? ' (' + instanceCount + ' instances)' : '');
+            statusEl.textContent = statusText + (instanceCount > 0 ? ' (' + instanceCount + _(' instances') + ')' : '');
         }
 
         // 2. Update Tunnel Table
@@ -691,13 +691,13 @@ return view.extend({
             var logStatusEl = document.getElementById('log-status');
             if (logStatusEl) {
                 var now = new Date();
-                var timeStr = now.toLocaleTimeString('en-US', {
+                var timeStr = now.toLocaleTimeString(undefined, {
                     hour: 'numeric',
                     minute: '2-digit',
                     second: '2-digit',
                     hour12: true
                 });
-                logStatusEl.textContent = 'Last updated: ' + timeStr;
+                logStatusEl.textContent = _('Last updated: %s').format(timeStr);
             }
         });
     },
