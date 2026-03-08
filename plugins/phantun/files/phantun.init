@@ -1,4 +1,15 @@
 #!/bin/sh /etc/rc.common
+# ==============================================================
+# 标题: phantun.init
+# 作者: reyan
+# 日期: 2026-03-08
+# 版本: 1.1.0
+# 描述: phantun OpenWrt init 脚本（devbox 副本），负责多实例启动、TUN 参数装配与规则维护。
+# 最近三次更新:
+#   - 2026-03-08: 在缺少 iptables / ip6tables 命令时改为降级告警而非直接失败。
+#   - 2026-03-08: 修复 stop/status 过程中的命令探测与无命令场景容错。
+#   - 2026-03-08: 保持与主线仓库 phantun.init 行为一致，便于 devbox 联调。
+# ==============================================================
 # Copyright (C) 2024 iHub-2020
 #
 # phantun init script for OpenWrt
@@ -31,13 +42,26 @@ CONFIG_FILE=/etc/config/phantun
 IPT="iptables"
 IP6T="ip6tables"
 
+setup_iptables_commands() {
+	local ipt_bin ip6t_bin
+
+	ipt_bin="$(command -v iptables 2>/dev/null || true)"
+	ip6t_bin="$(command -v ip6tables 2>/dev/null || true)"
+
+	[ -n "$ipt_bin" ] && IPT="$ipt_bin" || IPT=""
+	[ -n "$ip6t_bin" ] && IP6T="$ip6t_bin" || IP6T=""
+}
+
 load_global_settings() {
 	local wait_lock
 	config_load phantun
+	setup_iptables_commands
 	config_get_bool wait_lock general wait_lock 0
 	
-	if [ "$wait_lock" -eq 1 ]; then
+	if [ "$wait_lock" -eq 1 ] && [ -n "$IPT" ]; then
 		IPT="iptables -w"
+	fi
+	if [ "$wait_lock" -eq 1 ] && [ -n "$IP6T" ]; then
 		IP6T="ip6tables -w"
 	fi
 }
@@ -92,6 +116,13 @@ setup_client_iptables() {
 	local tun_peer="$1"
 	local tun_peer6="$2"
 	local ipv4_only="$3"
+
+	[ -n "$IPT" ] || logger -t phantun -p daemon.warn "iptables command unavailable, skipping IPv4 client rules"
+	[ -n "$IPT" ] || tun_peer=""
+	if [ "$ipv4_only" != "1" ] && [ -z "$IP6T" ]; then
+		logger -t phantun -p daemon.warn "ip6tables command unavailable, skipping IPv6 client rules"
+		tun_peer6=""
+	fi
 	
 	# IPv4 MASQUERADE rule
 	if [ -n "$tun_peer" ]; then
@@ -114,6 +145,13 @@ setup_server_iptables() {
 	local tun_peer="$2"
 	local tun_peer6="$3"
 	local ipv4_only="$4"
+
+	[ -n "$IPT" ] || logger -t phantun -p daemon.warn "iptables command unavailable, skipping IPv4 server rules"
+	[ -n "$IPT" ] || tun_peer=""
+	if [ "$ipv4_only" != "1" ] && [ -z "$IP6T" ]; then
+		logger -t phantun -p daemon.warn "ip6tables command unavailable, skipping IPv6 server rules"
+		tun_peer6=""
+	fi
 	
 	# IPv4 DNAT rule
 	if [ -n "$tun_peer" ] && [ -n "$local_port" ]; then
@@ -141,13 +179,13 @@ cleanup_client_iptables() {
     config_get ipv4_only "$section" ipv4_only "0"
 	
 	# Remove IPv4 MASQUERADE rule (Exact match with comment)
-	if [ -n "$tun_peer" ]; then
+	if [ -n "$tun_peer" ] && [ -n "$IPT" ]; then
 		$IPT -t nat -D POSTROUTING -s "$tun_peer/32" -m comment --comment "phantun" -j MASQUERADE 2>/dev/null
 		logger -t phantun -p daemon.info "Removed IPv4 MASQUERADE rule for $tun_peer"
 	fi
 	
 	# Remove IPv6 MASQUERADE rule
-	if [ "$ipv4_only" != "1" ] && [ -n "$tun_peer6" ]; then
+	if [ "$ipv4_only" != "1" ] && [ -n "$tun_peer6" ] && [ -n "$IP6T" ]; then
 		$IP6T -t nat -D POSTROUTING -s "$tun_peer6/128" -m comment --comment "phantun" -j MASQUERADE 2>/dev/null
 		logger -t phantun -p daemon.info "Removed IPv6 MASQUERADE rule for $tun_peer6"
 	fi
@@ -164,13 +202,13 @@ cleanup_server_iptables() {
     config_get ipv4_only "$section" ipv4_only "0"
 	
 	# Remove IPv4 DNAT rule
-	if [ -n "$tun_peer" ] && [ -n "$local_port" ]; then
+	if [ -n "$tun_peer" ] && [ -n "$local_port" ] && [ -n "$IPT" ]; then
 		$IPT -t nat -D PREROUTING -p tcp --dport "$local_port" -m comment --comment "phantun" -j DNAT --to-destination "$tun_peer:$local_port" 2>/dev/null
 		logger -t phantun -p daemon.info "Removed IPv4 DNAT rule: port $local_port -> $tun_peer:$local_port"
 	fi
 	
 	# Remove IPv6 DNAT rule
-	if [ "$ipv4_only" != "1" ] && [ -n "$tun_peer6" ] && [ -n "$local_port" ]; then
+	if [ "$ipv4_only" != "1" ] && [ -n "$tun_peer6" ] && [ -n "$local_port" ] && [ -n "$IP6T" ]; then
 		$IP6T -t nat -D PREROUTING -p tcp --dport "$local_port" -m comment --comment "phantun" -j DNAT --to-destination "[$tun_peer6]:$local_port" 2>/dev/null
 		logger -t phantun -p daemon.info "Removed IPv6 DNAT rule: port $local_port -> [$tun_peer6]:$local_port"
 	fi
@@ -353,6 +391,8 @@ stop_service() {
 	
 	# Cleanup server rules (Try standard cleanup first)
 	config_foreach cleanup_server_iptables server
+
+	[ -n "$IPT" ] || return 0
     
     # Brute Force Cleanup: Remove ANY remaining rules tagged with 'phantun' comment
     # This handles case where config sections were deleted before stop was called
@@ -360,9 +400,11 @@ stop_service() {
         $IPT -t nat $rule 2>/dev/null
     done
     
-    $IP6T -t nat -S | grep "comment phantun" | sed 's/-A/-D/' | while read rule; do 
-        $IP6T -t nat $rule 2>/dev/null
-    done
+	if [ -n "$IP6T" ]; then
+		$IP6T -t nat -S | grep "comment phantun" | sed 's/-A/-D/' | while read rule; do
+			$IP6T -t nat $rule 2>/dev/null
+		done
+	fi
 
     # Fallback Cleanup for legacy rules (without comments) and default subnets
     # This fixes the "Ghost Rules" issue for existing users
@@ -420,10 +462,18 @@ status() {
 	echo ""
 	echo "=== NAT Rules (phantun related) ==="
 	echo "IPv4 NAT rules:"
-	iptables -t nat -L -n 2>/dev/null | grep -E "MASQUERADE|DNAT.*192\.168\.(200|201)\." || echo "  (none found)"
+	if [ -n "$IPT" ]; then
+		$IPT -t nat -L -n 2>/dev/null | grep -E "MASQUERADE|DNAT.*192\.168\.(200|201)\." || echo "  (none found)"
+	else
+		echo "  (iptables unavailable)"
+	fi
 	
 	echo "IPv6 NAT rules:"
-	ip6tables -t nat -L -n 2>/dev/null | grep -E "MASQUERADE|DNAT.*fcc[89]::" || echo "  (none found)"
+	if [ -n "$IP6T" ]; then
+		$IP6T -t nat -L -n 2>/dev/null | grep -E "MASQUERADE|DNAT.*fcc[89]::" || echo "  (none found)"
+	else
+		echo "  (ip6tables unavailable)"
+	fi
 	
 	return $((1 - running))
 }

@@ -1,4 +1,14 @@
 # ==============================================================
+# 标题: docker-compose.yml
+# 作者: reyan
+# 日期: 2026-03-08
+# 版本: 1.1.0
+# 描述: OpenWrt LuCI DevBox 单容器模式编排文件，用于普通 LuCI / WireGuard 页面开发与单机验证。
+# 最近三次更新:
+#   - 2026-03-08: 增加 SETGID / SETUID 能力，修复 logd 运行态问题。
+#   - 2026-03-08: 对齐健康检查与 entrypoint 启动策略。
+#   - 2026-03-08: 为后续 dual 模式修复保持同构配置基线。
+# ==============================================================
 #  docker-compose.yml — 单容器版（非通讯类插件开发）
 #
 #  适用场景：
@@ -19,11 +29,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: openwrt-luci-devbox:24.10.3   # 构建后的本地镜像名
+    image: openwrt-luci-devbox:24.10.3 # 构建后的本地镜像名
     container_name: openwrt-luci-devbox
     hostname: OpenWrt
     restart: unless-stopped
-    entrypoint: ["/bin/ash", "/entrypoint.sh"]
+    entrypoint: [ "/bin/ash", "/entrypoint.sh" ]
 
     # 网络模式：bridge（容器独立命名空间，NET_ADMIN 不影响宿主机）
     network_mode: bridge
@@ -33,6 +43,8 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
+      - SETGID
+      - SETUID
 
     devices:
       - /dev/net/tun
@@ -60,11 +72,7 @@ services:
       - FORCE_REINIT=0
 
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "/bin/ash /devbox-selfcheck.sh --health"
-        ]
+      test: [ "CMD-SHELL", "/bin/ash /devbox-selfcheck.sh --health" ]
       interval: 30s
       timeout: 10s
       retries: 5

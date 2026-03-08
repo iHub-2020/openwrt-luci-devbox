@@ -1,5 +1,15 @@
 #!/bin/bash
 # ==============================================================
+#  标题: init-luci.sh
+#  作者: reyan
+#  日期: 2026-03-08
+#  版本: 1.1.0
+#  描述: 宿主机侧等待脚本，用于等待 single / dual 模式下容器与 LuCI 自检完成。
+#  最近三次更新:
+#    - 2026-03-08: 增加 dual 模式 peer 容器等待逻辑。
+#    - 2026-03-08: 保留自检驱动的就绪判定，避免仅凭容器存活误判为可用。
+#    - 2026-03-08: 统一输出 single / dual 模式连接信息。
+# ==============================================================
 #  init-luci.sh — 宿主机侧辅助脚本
 #
 #  原来的职责（在容器外通过 docker exec 安装包）已迁移到
@@ -68,6 +78,20 @@ until PRIMARY_CONTAINER="$(get_primary_container 2>/dev/null)" && docker exec "$
 done
 MODE="$(get_mode)"
 echo -e "${GREEN}✅ 容器已运行（模式: ${MODE}）${NC}"
+
+if [ "$MODE" = "dual" ]; then
+    echo -e "${YELLOW}⏳ 等待 peer 容器启动...${NC}"
+    elapsed=0
+    until docker exec "$CONTAINER_PEER" true >/dev/null 2>&1; do
+        sleep "$INTERVAL"
+        elapsed=$((elapsed + INTERVAL))
+        if [ "$elapsed" -ge "$TIMEOUT" ]; then
+            echo -e "${RED}❌ 等待 peer 容器超时（${TIMEOUT}s）${NC}"
+            exit 1
+        fi
+    done
+    echo -e "${GREEN}✅ peer 容器已运行${NC}"
+fi
 
 # ================================================================
 # 强制重新初始化（--reinit 参数）

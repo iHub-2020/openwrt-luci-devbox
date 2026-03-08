@@ -1,5 +1,16 @@
 #!/bin/sh
 # ==============================================================
+#  标题: entrypoint.sh
+#  作者: reyan
+#  日期: 2026-03-08
+#  版本: 1.2.0
+#  描述: OpenWrt LuCI DevBox 容器启动入口，负责初始化、网络接口模拟、运行时注入与服务启动。
+#  最近三次更新:
+#    - 2026-03-08: 修复 WireGuard 检测误报，改为以接口实际创建结果判断。
+#    - 2026-03-08: 调整 firewall/log 启动链并补齐 peer 的 phantun 默认配置与运行时注入。
+#    - 2026-03-08: 优化双容器环境启动稳定性，便于 phantun 联调与 LuCI 验收。
+# ==============================================================
+# ==============================================================
 #  entrypoint.sh — 容器启动入口
 #
 #  支持两种运行模式（由环境变量 DEVBOX_ROLE 区分）：
@@ -10,7 +21,7 @@
 #    DEVBOX_ROLE      = server | peer   （默认 server）
 #    WG_ADDR          = 10.10.58.1/24   （wg0 地址）
 #    WG_LISTEN_PORT   = 51820
-#    WG_SERVER_IP     = 172.30.0.10     （peer 模式下 server 的 IP）
+#    WG_SERVER_IP     = 172.31.0.10     （peer 模式下 server 的 IP）
 #    FORCE_REINIT     = 0 | 1
 # ==============================================================
 
@@ -23,6 +34,12 @@ WG_LISTEN_PORT="${WG_LISTEN_PORT:-51820}"
 echo "========================================================"
 echo " OpenWrt LuCI DevBox — 启动中 [角色: $ROLE]"
 echo "========================================================"
+
+apply_extra_firewall_rules() {
+    if [ -f /config-templates/init-firewall ]; then
+        sh /config-templates/init-firewall 2>/dev/null || true
+    fi
+}
 
 # ================================================================
 # 1. 首次初始化（安装 opkg 包）
@@ -49,8 +66,7 @@ fi
 echo "[net] 创建模拟网络接口（角色：$ROLE）..."
 
 # 加载内核模块（由宿主机提供，失败不阻断启动）
-modprobe wireguard 2>/dev/null && echo "[net] ✅ WireGuard 内核模块已加载" \
-    || echo "[net] ⚠️  WireGuard 模块不可用，wg0 将用 dummy 替代"
+modprobe wireguard 2>/dev/null || true
 modprobe tun   2>/dev/null || true
 modprobe dummy 2>/dev/null || true
 
@@ -65,8 +81,17 @@ fi
 
 # ── wg0（两种角色都需要，地址由环境变量决定）──
 if ! ip link show wg0 > /dev/null 2>&1; then
-    ip link add dev wg0 type wireguard 2>/dev/null \
-        || ip link add dev wg0 type dummy 2>/dev/null || true
+    if ip link add dev wg0 type wireguard 2>/dev/null; then
+        echo "[net] ✅ WireGuard 接口已创建"
+    elif ip link add dev wg0 type dummy 2>/dev/null; then
+        echo "[net] ⚠️  当前环境无法创建 WireGuard 接口，wg0 使用 dummy 替代"
+    else
+        echo "[net] ❌ 无法创建 wg0 接口"
+    fi
+elif ip -d link show wg0 2>/dev/null | grep -q 'wireguard'; then
+    echo "[net] ✅ 复用现有 WireGuard 接口 wg0"
+else
+    echo "[net] ⚠️  复用现有非 WireGuard 接口 wg0"
 fi
 ip link set wg0 up 2>/dev/null || true
 ip addr add "$WG_ADDR" dev wg0 2>/dev/null || true
@@ -115,7 +140,11 @@ WG_PRIVKEY=$(wg genkey 2>/dev/null || echo "PLACEHOLDER_KEY=")
 uci -q set network.wg0=interface
 uci set network.wg0.proto='wireguard'
 uci set network.wg0.private_key="$WG_PRIVKEY"
-uci set network.wg0.listen_port="$WG_LISTEN_PORT"
+if [ "$ROLE" = "server" ] && [ -n "$WG_LISTEN_PORT" ]; then
+    uci set network.wg0.listen_port="$WG_LISTEN_PORT"
+else
+    uci -q del network.wg0.listen_port 2>/dev/null || true
+fi
 uci -q del network.wg0.addresses 2>/dev/null || true
 uci add_list network.wg0.addresses="$WG_ADDR"
 
@@ -123,14 +152,7 @@ uci commit network
 echo "[uci] ✅ UCI 网络配置完成"
 
 # ================================================================
-# 5. 应用额外防火墙规则
-# ================================================================
-if [ -f /config-templates/init-firewall ]; then
-    sh /config-templates/init-firewall 2>/dev/null || true
-fi
-
-# ================================================================
-# 6. 加载插件（仅 server 模式）
+# 5. 加载插件（仅 server 模式）
 # ================================================================
 if [ "$ROLE" = "server" ]; then
     echo "[plugin] 扫描并加载插件..."
@@ -252,6 +274,12 @@ seed_phantun_runtime() {
     runtime_root="/luci-plugins/phantun/files"
     [ -d "$runtime_root" ] || return 0
 
+    if [ -f "$runtime_root/phantun.config" ] && [ ! -f /etc/config/phantun ]; then
+        echo "[phantun] 安装默认配置"
+        cp "$runtime_root/phantun.config" /etc/config/phantun
+        chmod 0644 /etc/config/phantun
+    fi
+
     if [ -f "$runtime_root/usr/bin/phantun_client" ] && [ ! -x /usr/bin/phantun_client ]; then
         echo "[phantun] 安装 phantun_client 运行时"
         cp "$runtime_root/usr/bin/phantun_client" /usr/bin/phantun_client
@@ -279,8 +307,8 @@ seed_phantun_runtime() {
 
 if [ "$ROLE" = "server" ]; then
     patch_luci_templates_for_devbox
-    seed_phantun_runtime
 fi
+seed_phantun_runtime
 
 # ================================================================
 # 7. 启动系统服务
@@ -311,7 +339,30 @@ elif [ -x /usr/sbin/rpcd ]; then
     sleep 1
 fi
 
-# netifd
+# logd / logread 运行态（phatnun 状态页日志依赖它）
+if [ -x /etc/init.d/log ]; then
+    if /etc/init.d/log start >/tmp/log-start.log 2>&1; then
+        echo "[service] ✅ log 已启动"
+    else
+        echo "[service] ⚠️ log 启动失败，继续保留容器供排障"
+        cat /tmp/log-start.log 2>/dev/null || true
+    fi
+fi
+
+# firewall4 / fw4 运行态（不启动会导致 LuCI WireGuard / firewall 页面报 state 告警）
+if [ -x /etc/init.d/firewall ]; then
+	if /etc/init.d/firewall boot >/tmp/firewall-start.log 2>&1 || /etc/init.d/firewall start >>/tmp/firewall-start.log 2>&1; then
+        echo "[service] ✅ firewall 已启动"
+    else
+        echo "[service] ⚠️ firewall 启动失败，继续保留容器供排障"
+        cat /tmp/firewall-start.log 2>/dev/null || true
+    fi
+fi
+
+# 额外规则要在 firewall 启动后应用，避免被 fw4 刷新覆盖
+apply_extra_firewall_rules
+
+# netifd 放在 firewall 之后启动，避免启动期 fw4 state 尚未建立时反复告警
 [ -x /sbin/netifd ] && { /sbin/netifd & sleep 2; }
 
 # SSH（两种角色都启动，方便进容器调试）

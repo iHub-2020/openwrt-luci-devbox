@@ -1,4 +1,14 @@
 # ==============================================================
+# 标题: docker-compose.dual.yml
+# 作者: reyan
+# 日期: 2026-03-08
+# 版本: 1.2.0
+# 描述: OpenWrt LuCI DevBox 双容器模式编排文件，用于 phantun / udp2raw 等通讯类插件联调。
+# 最近三次更新:
+#   - 2026-03-08: 将 dual 模式 devnet 网段改为 172.31.0.0/24，避免与历史环境冲突。
+#   - 2026-03-08: 为 server / peer 增加 SETGID / SETUID 能力，修复 logd 相关故障。
+#   - 2026-03-08: 为 peer 挂载 plugins 目录，补齐 phantun 运行时与默认配置来源。
+# ==============================================================
 #  docker-compose.dual.yml — 双容器版（通讯类插件流量验证）
 #
 #  适用场景：
@@ -10,9 +20,9 @@
 #
 #  拓扑结构：
 #
-#       ┌─────────────────────┐      devnet (172.30.0.0/24)
+#       ┌─────────────────────┐      devnet (172.31.0.0/24)
 #       │  openwrt-server     │◄────────────────────────────►
-#       │  （路由器/服务端）    │  172.30.0.10              172.30.0.20
+#       │  （路由器/服务端）    │  172.31.0.10              172.31.0.20
 #       │  LuCI: :8080        │                    ┌──────────────────┐
 #       │  SSH:  :2222        │                    │  openwrt-peer    │
 #       │  wg0: 10.10.58.1    │                    │  （对端/客户端）  │
@@ -31,7 +41,7 @@
 #    # server 容器内：
 #    udp2raw -s -l 0.0.0.0:4096 -r 127.0.0.1:51820 -k "passwd" --raw-mode faketcp &
 #    # peer 容器内（TARGET_IP 为 server 的 devnet IP）：
-#    udp2raw -c -l 0.0.0.0:3333 -r 172.30.0.10:4096 -k "passwd" --raw-mode faketcp &
+#    udp2raw -c -l 0.0.0.0:3333 -r 172.31.0.10:4096 -k "passwd" --raw-mode faketcp &
 # ==============================================================
 
 networks:
@@ -39,26 +49,28 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.30.0.0/24
-          gateway: 172.30.0.1
+        - subnet: 172.31.0.0/24
+          gateway: 172.31.0.1
 
 volumes:
   opkg-cache-server:
   opkg-cache-peer:
 
-# 公共配置（YAML anchor）
+    # 公共配置（YAML anchor）
 x-openwrt-common: &openwrt-common
   build:
     context: .
     dockerfile: Dockerfile
   image: openwrt-luci-devbox:24.10.3
   restart: unless-stopped
-  entrypoint: ["/bin/ash", "/entrypoint.sh"]
+  entrypoint: [ "/bin/ash", "/entrypoint.sh" ]
   cap_drop:
     - ALL
   cap_add:
     - NET_ADMIN
     - NET_RAW
+    - SETGID
+    - SETUID
   devices:
     - /dev/net/tun
   sysctls:
@@ -80,7 +92,7 @@ services:
     hostname: OpenWrt-Server
     networks:
       devnet:
-        ipv4_address: 172.30.0.10
+        ipv4_address: 172.31.0.10
     ports:
       - "127.0.0.1:8080:80"
       - "127.0.0.1:2222:22"
@@ -98,11 +110,7 @@ services:
       - WG_ADDR=10.10.58.1/24
       - WG_LISTEN_PORT=51820
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "/bin/ash /devbox-selfcheck.sh --health"
-        ]
+      test: [ "CMD-SHELL", "/bin/ash /devbox-selfcheck.sh --health" ]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -114,10 +122,11 @@ services:
     hostname: OpenWrt-Peer
     networks:
       devnet:
-        ipv4_address: 172.30.0.20
+        ipv4_address: 172.31.0.20
     ports:
       - "127.0.0.1:2223:22"
     volumes:
+      - ./plugins:/luci-plugins
       - ./entrypoint.sh:/entrypoint.sh:ro
       - ./docker-init.sh:/docker-init.sh:ro
       - ./init-luci.sh:/init-luci.sh:ro
@@ -128,7 +137,7 @@ services:
       - FORCE_REINIT=0
       - DEVBOX_ROLE=peer
       - WG_ADDR=10.10.58.2/24
-      - WG_SERVER_IP=172.30.0.10
+      - WG_SERVER_IP=172.31.0.10
       - WG_LISTEN_PORT=51820
     depends_on:
       openwrt-server:

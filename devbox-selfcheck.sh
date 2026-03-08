@@ -1,4 +1,15 @@
 #!/bin/sh
+# ==============================================================
+#  标题: devbox-selfcheck.sh
+#  作者: reyan
+#  日期: 2026-03-08
+#  版本: 1.1.0
+#  描述: DevBox 启动后自检脚本，用于验证 LuCI、WireGuard 页面、phantun 页面及 firewall 运行态。
+#  最近三次更新:
+#    - 2026-03-08: 增加 firewall 运行态检查，防止 LuCI 页面存在隐性告警。
+#    - 2026-03-08: 保留 phantun 配置页与状态页的 RPCError / Promise 异常检查。
+#    - 2026-03-08: 继续用于 single / dual 模式统一健康探测。
+# ==============================================================
 set -eu
 
 MODE="${1:---health}"
@@ -81,6 +92,11 @@ check_no_rpcerror() {
     fi
 }
 
+check_firewall_state() {
+    /etc/init.d/firewall status >"$TMPDIR/firewall.status" 2>&1 || true
+    grep -q '^active' "$TMPDIR/firewall.status" || fail 'firewall service is not active'
+}
+
 check_scope() {
     for path in \
         /usr/share/luci/menu.d/luci-app-poweroffdevice.json \
@@ -125,6 +141,7 @@ main() {
 
     check_no_rpcerror
     check_branding
+    check_firewall_state
     check_scope
     check_phantun_runtime
 

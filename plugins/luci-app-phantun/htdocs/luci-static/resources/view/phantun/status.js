@@ -1,12 +1,13 @@
 /**
- * Copyright (C) 2026 iHub-2020
- * 
- * LuCI Phantun Manager - Status Page
- * Displays real-time tunnel status, connection info, and diagnostics
- * 
- * @module luci-app-phantun/status
- * @version 1.0.0
- * @date 2026-01-31
+ * 标题: phantun/status.js
+ * 作者: reyan
+ * 日期: 2026-03-08
+ * 版本: 1.1.0
+ * 描述: LuCI Phantun 状态页，负责展示服务状态、日志、TUN 诊断与规则检查。
+ * 最近三次更新:
+ *   - 2026-03-08: 修复日志面板“Scroll to Top”按钮目标元素错误。
+ *   - 2026-03-08: 当运行态缺少 iptables-save / ip6tables-save 时改为友好降级提示。
+ *   - 2026-03-08: 继续保留轮询刷新与多实例状态诊断逻辑。
  */
 
 'use strict';
@@ -251,8 +252,22 @@ return view.extend({
             L.resolveDefault(fs.exec('/usr/sbin/iptables-save'), {}),
             L.resolveDefault(fs.exec('/usr/sbin/ip6tables-save'), {})
         ]).then(function (results) {
+            var ipv4Res = results[0] || {};
+            var ipv6Res = results[1] || {};
             var ipv4Output = (results[0] && results[0].stdout) || '';
             var ipv6Output = (results[1] && results[1].stdout) || '';
+
+            var ipv4Unavailable = ipv4Res.code === 127 || /not found/i.test(ipv4Res.stderr || '');
+            var ipv6Unavailable = ipv6Res.code === 127 || /not found/i.test(ipv6Res.stderr || '');
+
+            if (ipv4Unavailable && ipv6Unavailable) {
+                return {
+                    text: _('iptables tools unavailable in this runtime'),
+                    color: '#f0ad4e',
+                    ipv4: [],
+                    ipv6: []
+                };
+            }
 
             var statusText = _('No rules detected');
             var statusColor = '#f0ad4e';
@@ -526,8 +541,10 @@ return view.extend({
                     E('button', {
                         'class': 'cbi-button cbi-button-neutral',
                         'click': function () {
-                            var textarea = document.getElementById('syslog-textarea');
-                            textarea.scrollTop = 0;
+                            var logContainer = document.getElementById('syslog-container');
+                            if (logContainer) {
+                                logContainer.scrollTop = 0;
+                            }
                         }
                     }, _('Scroll to Top'))
                 ])

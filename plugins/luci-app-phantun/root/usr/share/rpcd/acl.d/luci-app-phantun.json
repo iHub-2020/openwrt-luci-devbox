@@ -1,5 +1,15 @@
 {
   "luci-app-phantun": {
+    "_title": "luci-app-phantun ACL",
+    "_author": "reyan",
+    "_date": "2026-03-08",
+    "_version": "1.1.0",
+    "_summary": "LuCI Phantun 配置页与状态页 ACL，覆盖状态读取与服务控制权限。",
+    "_recent_updates": [
+      "2026-03-08: 补齐 setInitAction 与 /etc/init.d/phantun 执行权限。",
+      "2026-03-08: 补齐 iptables-save / ip6tables-save 读取权限。",
+      "2026-03-08: 保持与主线 reyan_new ACL 定义一致。"
+    ],
     "description": "Grant access to Phantun configuration and status",
     "read": {
       "uci": [
@@ -26,6 +36,12 @@
         "/sbin/logread": [
           "exec"
         ],
+        "/usr/sbin/iptables": [
+          "exec"
+        ],
+        "/usr/sbin/ip6tables": [
+          "exec"
+        ],
         "/usr/sbin/iptables-save": [
           "exec"
         ],
@@ -48,7 +64,23 @@
     "write": {
       "uci": [
         "phantun"
-      ]
+      ],
+      "ubus": {
+        "service": [
+          "list"
+        ],
+        "luci": [
+          "setInitAction"
+        ]
+      },
+      "file": {
+        "/etc/config/phantun": [
+          "write"
+        ],
+        "/etc/init.d/phantun": [
+          "exec"
+        ]
+      }
     }
   }
 }

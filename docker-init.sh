@@ -1,5 +1,16 @@
 #!/bin/sh
 # ==============================================================
+#  标题: docker-init.sh
+#  作者: reyan
+#  日期: 2026-03-08
+#  版本: 1.2.0
+#  描述: OpenWrt LuCI DevBox 首次初始化脚本，负责 opkg 源配置、依赖安装与基础运行态准备。
+#  最近三次更新:
+#    - 2026-03-08: 优化可选包安装策略，逐项探测并跳过不可用包，减少初始化噪音。
+#    - 2026-03-08: 补充 firewall4 基础依赖并修复 SSH 配置目录缺失问题。
+#    - 2026-03-08: 收敛网络工具安装范围，避免无谓的内核依赖报错干扰验收。
+# ==============================================================
+# ==============================================================
 #  docker-init.sh — 容器首次启动时执行，安装所有依赖包
 #  幂等：通过 /etc/.devbox-initialized 标记避免重复安装
 # ==============================================================
@@ -49,19 +60,20 @@ install_pkgs_required() {
 }
 
 install_pkgs_optional() {
-    local pkg available install_list=""
+    local pkg available
     for pkg in "$@"; do
         if is_installed "$pkg"; then
             continue
         fi
         available="$(opkg list 2>/dev/null | grep -E "^$pkg -" || true)"
-        [ -n "$available" ] && install_list="$install_list $pkg"
+        if [ -z "$available" ]; then
+            echo "[init] 跳过不可用可选包: $pkg"
+            continue
+        fi
+
+        echo "[init] 安装可选包: $pkg"
+        opkg install "$pkg" || echo "[init] ⚠️ 可选包安装失败，已忽略: $pkg"
     done
-
-    [ -n "$install_list" ] || return 0
-
-    echo "[init] 安装可选包:$install_list"
-    opkg install $install_list || true
 }
 
 # ----------------------------------------------------------------
@@ -69,6 +81,7 @@ install_pkgs_optional() {
 # ----------------------------------------------------------------
 echo "[init] 安装基础系统包..."
 install_pkgs_required \
+    firewall4 \
     uhttpd uhttpd-mod-ubus uhttpd-mod-ucode uhttpd-mod-lua \
     rpcd rpcd-mod-rpcsys rpcd-mod-file \
     luci-base luci-mod-admin-full \
@@ -86,12 +99,7 @@ install_pkgs_required \
 echo "[init] 安装网络工具..."
 install_pkgs_optional \
     ip-full \
-    iptables iptables-mod-extra iptables-mod-conntrack-extra \
-    ip6tables \
     nftables kmod-nft-nat \
-    tc-full \
-    conntrack \
-    ipset \
     socat \
     tcpdump \
     bind-dig \
@@ -108,20 +116,18 @@ install_pkgs_optional \
 echo "[init] 安装 WireGuard 套件..."
 WG_REQUIRED="wireguard-tools luci-proto-wireguard qrencode"
 WG_FORCE="rpcd-mod-wireguard"
-WG_MISSING=""
-for pkg in $WG_REQUIRED; do
-    is_installed "$pkg" || WG_MISSING="$WG_MISSING $pkg"
+for pkg in $WG_REQUIRED $WG_FORCE; do
+    is_installed "$pkg" && continue
+    available="$(opkg list 2>/dev/null | grep -E "^$pkg -" || true)"
+    if [ -z "$available" ]; then
+        echo "[init] 跳过不可用 WireGuard 相关包: $pkg"
+        continue
+    fi
+
+    echo "[init] 安装 WireGuard 相关包(允许缺失内核依赖): $pkg"
+    opkg install --force-depends "$pkg" || echo "[init] ⚠️ WireGuard 相关包安装失败，已忽略: $pkg"
 done
-for pkg in $WG_FORCE; do
-    is_installed "$pkg" || {
-        available="$(opkg list 2>/dev/null | grep -E "^$pkg -" || true)"
-        [ -n "$available" ] && WG_MISSING="$WG_MISSING $pkg"
-    }
-done
-if [ -n "$WG_MISSING" ]; then
-    echo "[init] 安装 WireGuard 必需包(允许缺失 kmod 依赖):$WG_MISSING"
-    opkg install --force-depends $WG_MISSING || true
-fi
+
 install_pkgs_optional \
     kmod-wireguard \
     luci-app-wireguard \
@@ -180,6 +186,8 @@ uci commit luci
 # ----------------------------------------------------------------
 # 配置 SSH（允许 root 密码登录）
 # ----------------------------------------------------------------
+mkdir -p /etc/ssh
+
 cat > /etc/ssh/sshd_config << 'SSHEOF'
 Port 22
 PermitRootLogin yes
