@@ -1,5 +1,17 @@
-# 忽略 plugins 目录下所有子目录（插件仓库单独管理）
+# 注意：origin/main 已跟踪 plugins/ 下的 phantun 相关文件。
+# 这里只忽略本地外挂插件工作区带来的未跟踪噪音，不影响已跟踪文件。
 plugins/*/
+plugins/.git/
+plugins/.gitattributes
+plugins/repair_phantun_config.sh
+plugins/simulate_dev.bat
+
+# Node 依赖（由 package.json / package-lock.json 还原）
+node_modules/
+
+# QA 证据与运行态产物
+qa_evidence/
+state/
 
 # 忽略 packages 中的 IPK 包
 packages/*.ipk
