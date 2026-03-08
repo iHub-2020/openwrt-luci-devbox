@@ -2,17 +2,17 @@ msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
 # Application branding
-msgid "TCP Tunnel"
-msgstr "TCP 隧道管理器"
+msgid "Phantun TCP Obfuscation"
+msgstr "Phantun TCP 伪装"
 
-msgid "TCP Tunnel Configuration"
-msgstr "TCP 隧道配置"
+msgid "Phantun Configuration"
+msgstr "Phantun 配置"
 
-msgid "TCP Tunnel Status"
-msgstr "TCP 隧道状态"
+msgid "Phantun Status"
+msgstr "Phantun 状态"
 
-msgid "TCP Tunnel (Phantun) is a lightweight UDP to TCP obfuscator. It creates TUN interfaces and requires proper iptables NAT rules. Configure client mode to connect to a server, or server mode to accept client connections."
-msgstr "TCP 隧道 (Phantun) 是一个轻量级的 UDP 到 TCP 混淆工具。它创建 TUN 接口并需要正确的 iptables NAT 规则。配置客户端模式以连接到服务器,或配置服务器模式以接受客户端连接。"
+msgid "Phantun is a lightweight UDP to FakeTCP obfuscator. It creates TUN interfaces and requires proper iptables NAT rules. Configure client mode to connect to a server, or server mode to accept client connections."
+msgstr "Phantun 是一个轻量级的 UDP 到 FakeTCP 伪装工具。它会创建 TUN 接口，并需要正确的 iptables NAT 规则。可配置客户端模式连接服务端，或配置服务端模式接收客户端连接。"
 
 # Menu items
 msgid "Configuration"

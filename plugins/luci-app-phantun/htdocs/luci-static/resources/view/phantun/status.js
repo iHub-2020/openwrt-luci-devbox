@@ -28,7 +28,7 @@ var callServiceList = rpc.declare({
 });
 
 return view.extend({
-    title: _('TCP Tunnel Status'),
+    title: _('Phantun Status'),
 
     pollInterval: 5,
     logPollFn: null,
@@ -399,7 +399,7 @@ return view.extend({
         var instanceCount = Object.keys(serviceStatus.instances).length;
 
         var container = E('div', { 'class': 'cbi-map' }, [
-            E('h2', {}, _('TCP Tunnel Status')),
+            E('h2', {}, _('Phantun Status')),
 
             // ==================== Service Status (Compact) ====================
             E('div', { 'class': 'cbi-section' }, [

@@ -19,7 +19,7 @@ PKG_LICENSE:=MIT
 PKG_MAINTAINER:=iHub-2020
 
 # 这里的 Title 会显示在 make menuconfig 中
-LUCI_TITLE:=LuCI support for Phantun UDP Obfuscator
+LUCI_TITLE:=LuCI support for Phantun TCP Obfuscation
 # 架构设置为 all，因为是脚本和网页，不涉及二进制编译
 LUCI_PKGARCH:=all
 # 依赖关系：确保安装了 phantun 和 luci 基础库
@@ -27,7 +27,7 @@ LUCI_DEPENDS:=+phantun +luci-base
 
 # 这一段描述是标准的 OpenWrt 包描述格式
 define Package/luci-app-phantun/description
-  Phantun UDP Obfuscator - Web interface for configuring Phantun client and server
+  Phantun TCP Obfuscation - Web interface for configuring Phantun client and server
   instances with TUN interface management and automatic iptables rules.
 endef
 

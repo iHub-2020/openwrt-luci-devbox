@@ -33,7 +33,7 @@ var callInitAction = rpc.declare({
 });
 
 return view.extend({
-    title: _('TCP Tunnel Configuration'),
+    title: _('Phantun Configuration'),
 
     load: function () {
         return Promise.all([
@@ -154,8 +154,8 @@ return view.extend({
             return grid.renderMoreOptionsModal(section_id);
         };
 
-        m = new form.Map('phantun', _('TCP Tunnel Configuration'),
-            _('TCP Tunnel (Phantun) is a lightweight UDP to TCP obfuscator. It creates TUN interfaces and requires proper iptables NAT rules. ' +
+        m = new form.Map('phantun', _('Phantun Configuration'),
+            _('Phantun is a lightweight UDP to FakeTCP obfuscator. It creates TUN interfaces and requires proper iptables NAT rules. ' +
                 'Configure client mode to connect to a server, or server mode to accept client connections.'));
 
 
