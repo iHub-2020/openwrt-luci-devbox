@@ -101,8 +101,8 @@ check_scope() {
     for path in \
         /usr/share/luci/menu.d/luci-app-poweroffdevice.json \
         /usr/share/rpcd/acl.d/luci-app-poweroffdevice.json \
-        /usr/share/luci/menu.d/luci-app-udp-tunnel.json \
-        /usr/share/rpcd/acl.d/luci-app-udp-tunnel.json \
+        /usr/share/luci/menu.d/luci-app-udp2raw.json \
+        /usr/share/rpcd/acl.d/luci-app-udp2raw.json \
         /www/luci-static/resources/view/udp2raw; do
         [ ! -e "$path" ] || fail "out-of-scope runtime artifact still exposed: $path"
     done

@@ -165,9 +165,9 @@ openwrt-luci-devbox/
 │   ├── luci-app-phantun/       # 插件：phantun TCP 伪装
 │   ├── phantun/                # 依赖二进制
 │   ├── luci-app-poweroffdevice/
-│   ├── luci-app-udp-speeder/
+│   ├── luci-app-udpspeeder/
 │   ├── udpspeeder/
-│   ├── luci-app-udp-tunnel/
+│   ├── luci-app-udp2raw/
 │   └── udp2raw/
 │
 └── doc/
@@ -297,8 +297,8 @@ git clone --filter=blob:none --sparse \
 cd plugins && git sparse-checkout set \
     luci-app-phantun phantun \
     luci-app-poweroffdevice \
-    luci-app-udp-speeder udpspeeder \
-    luci-app-udp-tunnel udp2raw
+    luci-app-udpspeeder udpspeeder \
+    luci-app-udp2raw udp2raw
 cd ..
 
 # 3. 构建镜像（首次需下载 rootfs.tar.gz，约 5MB）
@@ -340,7 +340,7 @@ docker compose down
 **适用场景：**
 - phantun（将 UDP 伪装为 TCP 流量）的端对端验证
 - udp2raw（将 UDP 伪装为 TCP/ICMP）的穿透测试
-- udp-speeder 多倍发包效果验证
+- udpspeeder 多倍发包效果验证
 - WireGuard over TCP 伪装插件的真实流量测试
 - 任何需要"服务端 ↔ 客户端"双向流量的场景
 

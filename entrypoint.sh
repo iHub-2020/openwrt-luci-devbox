@@ -167,10 +167,10 @@ if [ "$ROLE" = "server" ]; then
     rm -f \
         /usr/share/luci/menu.d/luci-app-poweroffdevice.json \
         /usr/share/rpcd/acl.d/luci-app-poweroffdevice.json \
-        /usr/share/luci/menu.d/luci-app-udp-tunnel.json \
-        /usr/share/rpcd/acl.d/luci-app-udp-tunnel.json \
-        /usr/share/luci/menu.d/luci-app-udp-speeder.json \
-        /usr/share/rpcd/acl.d/luci-app-udp-speeder.json 2>/dev/null || true
+        /usr/share/luci/menu.d/luci-app-udp2raw.json \
+        /usr/share/rpcd/acl.d/luci-app-udp2raw.json \
+        /usr/share/luci/menu.d/luci-app-udpspeeder.json \
+        /usr/share/rpcd/acl.d/luci-app-udpspeeder.json 2>/dev/null || true
     rm -rf \
         /www/luci-static/resources/view/udp2raw \
         /www/luci-static/resources/view/udpspeeder \

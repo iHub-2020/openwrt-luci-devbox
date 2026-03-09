@@ -11,8 +11,8 @@
 ├── plugins/                      # 插件开发目录（挂载到容器 /luci-plugins）
 │   ├── luci-app-phantun/
 │   ├── luci-app-poweroffdevice/
-│   ├── luci-app-udp-speeder/
-│   └── luci-app-udp-tunnel/
+│   ├── luci-app-udpspeeder/
+│   └── luci-app-udp2raw/
 ├── dev.sh                        # 开发辅助脚本（重载/状态/SSH）
 ├── docker-init.sh                # 容器初始化脚本
 ├── docker-compose.yml            # 单容器模式
