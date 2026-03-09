@@ -2,7 +2,7 @@
 
 > 文档类型：生产级交付（可审阅版）  
 > 本轮交付范围：**仅 `luci-app-phantun` + `phantun` 必要依赖**  
-> 非本轮交付：`poweroffdevice` / `udp-speeder` / `udp2raw` / 其他无关插件与扩展验证  
+> 非本轮交付：`poweroffdevice` / `udpspeeder` / `udp2raw` / 其他无关插件与扩展验证  
 > 适用项目：`openwrt-luci-devbox` + `luci-app-phantun` + `phantun`  
 > 维护路径：`/home/reyan/Projects/openwrt-luci-devbox/doc/PHANTUN_生产交付文档.md`
 
@@ -21,7 +21,7 @@
 
 **强制范围说明：**
 - 当前交付与验收只覆盖 `luci-app-phantun` 与其必要依赖。
-- 不得将 `poweroffdevice`、`udp-speeder`、`udp2raw` 或其他无关插件写入本轮交付范围。
+- 不得将 `poweroffdevice`、`udpspeeder`、`udp2raw` 或其他无关插件写入本轮交付范围。
 - 不允许把“脚本里已经写了/仓库里已经存在”视为完成；**只有运行态实际生效并通过验收，才算完成**。
 
 ---

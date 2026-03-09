@@ -65,8 +65,8 @@ const { chromium } = require('playwright');
   const body = await page.locator('body').innerText();
   result.pollution = {
     poweroffdevice: /Power Off Device/i.test(body),
-    udpSpeeder: /udp-speeder|UDP Speeder/i.test(body),
-    udpTunnel: /udp-tunnel|UDP Tunnel/i.test(body),
+    udpspeeder: /udpspeeder|UDPspeeder/i.test(body),
+    udp2raw: /udp2raw/i.test(body),
     udp2raw: /udp2raw/i.test(body)
   };
 

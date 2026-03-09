@@ -14,7 +14,7 @@
 #  适用场景：
 #    ✅ phantun（TCP 伪装 UDP）端对端流量验证
 #    ✅ udp2raw（UDP 伪装 TCP/ICMP）穿透测试
-#    ✅ udp-speeder 多倍发包效果验证
+#    ✅ udpspeeder 多倍发包效果验证
 #    ✅ WireGuard 伪装插件的真实流量测试
 #    ✅ 任何需要"服务端 ↔ 客户端"双向流量的场景
 #
