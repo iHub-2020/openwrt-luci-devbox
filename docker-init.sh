@@ -99,6 +99,8 @@ install_pkgs_required \
 echo "[init] 安装网络工具..."
 install_pkgs_optional \
     ip-full \
+    iptables-zz-legacy \
+    ip6tables-zz-legacy \
     nftables kmod-nft-nat \
     socat \
     tcpdump \

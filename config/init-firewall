@@ -16,4 +16,29 @@ iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null |
 # IPv6 基本规则
 ip6tables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
 
+# --------------------------------------------------------------
+# phantun / udp2raw 类插件在 devbox 单容器环境中的补充规则
+# 说明：
+# - OpenWrt 容器里的 phantun_client 会从 tun0 发出流量，再经 eth1/eth0 出口访问 Docker 侧。
+# - fw4 默认 forward policy 为 REJECT，且 masquerade 仅配置在 wan(pppoe-wan) 上，
+#   无法覆盖我们联调用的 eth1(devnet) / eth0(bridge) 出口。
+# - 这里优先用 nft 注入一组最小规则，保证 tun0 -> Docker 联调网络可以转发并做源地址伪装。
+# --------------------------------------------------------------
+if command -v nft >/dev/null 2>&1; then
+    # 幂等处理：每次重建临时表，避免重复追加同一条规则
+    nft delete table ip phantun_tmp >/dev/null 2>&1 || true
+    nft add table ip phantun_tmp
+
+    nft 'add chain ip phantun_tmp postrouting { type nat hook postrouting priority srcnat; policy accept; }'
+    nft 'add chain ip phantun_tmp forward { type filter hook forward priority filter; policy accept; }'
+
+    # OpenWrt client TUN peer -> Docker devnet
+    nft add rule ip phantun_tmp postrouting ip saddr 192.168.200.2 oifname "eth1" masquerade 2>/dev/null || true
+    nft add rule ip phantun_tmp forward iifname "tun0" oifname "eth1" accept 2>/dev/null || true
+
+    # 兼容单容器默认 bridge 管理网（eth0）
+    nft add rule ip phantun_tmp postrouting ip saddr 192.168.200.2 oifname "eth0" masquerade 2>/dev/null || true
+    nft add rule ip phantun_tmp forward iifname "tun0" oifname "eth0" accept 2>/dev/null || true
+fi
+
 echo "[firewall] 额外规则已应用"

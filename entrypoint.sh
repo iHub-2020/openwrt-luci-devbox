@@ -31,6 +31,14 @@ ROLE="${DEVBOX_ROLE:-server}"
 WG_ADDR="${WG_ADDR:-10.10.58.1/24}"
 WG_LISTEN_PORT="${WG_LISTEN_PORT:-51820}"
 
+if [ "$ROLE" = "peer" ]; then
+    WAN_ADDR4="${WAN_ADDR4:-100.64.0.2}"
+    WAN_ADDR6="${WAN_ADDR6:-fd00:100::2/64}"
+else
+    WAN_ADDR4="${WAN_ADDR4:-100.64.0.1}"
+    WAN_ADDR6="${WAN_ADDR6:-fd00:100::1/64}"
+fi
+
 echo "========================================================"
 echo " OpenWrt LuCI DevBox — 启动中 [角色: $ROLE]"
 echo "========================================================"
@@ -38,6 +46,35 @@ echo "========================================================"
 apply_extra_firewall_rules() {
     if [ -f /config-templates/init-firewall ]; then
         sh /config-templates/init-firewall 2>/dev/null || true
+    fi
+}
+
+ensure_runtime_interfaces() {
+    echo "[net] 二次校正运行时接口状态..."
+
+    if [ "$ROLE" = "server" ]; then
+        if ! ip link show br-lan >/dev/null 2>&1; then
+            ip link add name br-lan type bridge 2>/dev/null || true
+        fi
+        ip link set br-lan up 2>/dev/null || true
+        ip addr add 192.168.1.1/24 dev br-lan 2>/dev/null || true
+    fi
+
+    if ! ip link show pppoe-wan >/dev/null 2>&1; then
+        ip link add dev pppoe-wan type dummy 2>/dev/null || true
+    fi
+    ip link set pppoe-wan up 2>/dev/null || true
+    ip addr add "$WAN_ADDR4/24" dev pppoe-wan 2>/dev/null || true
+    ip -6 addr add "$WAN_ADDR6" dev pppoe-wan 2>/dev/null || true
+
+    ip link set wg0 up 2>/dev/null || true
+    ip addr add "$WG_ADDR" dev wg0 2>/dev/null || true
+
+    if command -v ifup >/dev/null 2>&1; then
+        [ "$ROLE" = "server" ] && ifup lan >/tmp/ifup-lan.log 2>&1 || true
+        ifup wan >/tmp/ifup-wan.log 2>&1 || true
+        ifup wan_6 >/tmp/ifup-wan6.log 2>&1 || true
+        ifup wg0 >/tmp/ifup-wg0.log 2>&1 || true
     fi
 }
 
@@ -69,6 +106,7 @@ echo "[net] 创建模拟网络接口（角色：$ROLE）..."
 modprobe wireguard 2>/dev/null || true
 modprobe tun   2>/dev/null || true
 modprobe dummy 2>/dev/null || true
+modprobe bridge 2>/dev/null || true
 
 # ── br-lan（server 模式才需要）──
 if [ "$ROLE" = "server" ]; then
@@ -101,6 +139,8 @@ if ! ip link show pppoe-wan > /dev/null 2>&1; then
     ip link add dev pppoe-wan type dummy 2>/dev/null || true
 fi
 ip link set pppoe-wan up 2>/dev/null || true
+ip addr add "$WAN_ADDR4/24" dev pppoe-wan 2>/dev/null || true
+ip -6 addr add "$WAN_ADDR6" dev pppoe-wan 2>/dev/null || true
 
 # ── utun（两种角色都需要，phantun/udp2raw 使用）──
 if ! ip link show utun > /dev/null 2>&1; then
@@ -114,6 +154,10 @@ ip link set utun up 2>/dev/null || true
 echo "[uci] 配置网络接口..."
 
 if [ "$ROLE" = "server" ]; then
+	uci -q set network.dev_lan=device
+	uci set network.dev_lan.name='br-lan'
+	uci set network.dev_lan.type='bridge'
+	uci set network.dev_lan.bridge_empty='1'
     uci -q set network.lan=interface
     uci set network.lan.proto='static'
     uci set network.lan.device='br-lan'
@@ -123,16 +167,25 @@ if [ "$ROLE" = "server" ]; then
 fi
 
 uci -q set network.wan=interface
-uci set network.wan.proto='pppoe'
 # 不要接管 Docker 分配给容器管理面的 eth0，否则会打断宿主机 -> 容器端口映射。
 # dual 模式下 peer 也必须避开 eth0，否则会失去 172.31.0.0/24 对打链路。
+# 这里保留 pppoe-wan 这个“仿真 WAN 设备名”，但协议改为静态地址，
+# 避免单/双容器模式下 LuCI 网络页长期显示 PPPoE 连接失败。
+uci set network.wan.proto='static'
 uci set network.wan.device='pppoe-wan'
-uci set network.wan.username='test@isp.example'
-uci set network.wan.password='testpassword'
+uci set network.wan.ipaddr="$WAN_ADDR4"
+uci set network.wan.netmask='255.255.255.0'
+uci -q del network.wan.username 2>/dev/null || true
+uci -q del network.wan.password 2>/dev/null || true
+uci -q del network.wan.ipv6 2>/dev/null || true
 
 uci -q set network.wan_6=interface
-uci set network.wan_6.proto='dhcpv6'
-uci set network.wan_6.device='@wan'
+uci set network.wan_6.proto='static'
+uci set network.wan_6.device='pppoe-wan'
+uci -q del network.wan_6.reqaddress 2>/dev/null || true
+uci -q del network.wan_6.reqprefix 2>/dev/null || true
+uci -q del network.wan_6.ip6addr 2>/dev/null || true
+uci add_list network.wan_6.ip6addr="$WAN_ADDR6"
 
 # wg0 两个角色都配置
 WG_PRIVKEY=$(wg genkey 2>/dev/null || echo "PLACEHOLDER_KEY=")
@@ -363,6 +416,8 @@ apply_extra_firewall_rules
 
 # netifd 放在 firewall 之后启动，避免启动期 fw4 state 尚未建立时反复告警
 [ -x /sbin/netifd ] && { /sbin/netifd & sleep 2; }
+
+ensure_runtime_interfaces
 
 # SSH（两种角色都启动，方便进容器调试）
 if [ -x /usr/sbin/sshd ]; then

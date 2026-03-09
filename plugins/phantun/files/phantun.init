@@ -41,15 +41,69 @@ CONFIG_FILE=/etc/config/phantun
 # Default iptables command (overridden by config)
 IPT="iptables"
 IP6T="ip6tables"
+NFT="nft"
 
 setup_iptables_commands() {
-	local ipt_bin ip6t_bin
+	local ipt_bin ip6t_bin nft_bin
 
 	ipt_bin="$(command -v iptables 2>/dev/null || true)"
 	ip6t_bin="$(command -v ip6tables 2>/dev/null || true)"
+	nft_bin="$(command -v nft 2>/dev/null || true)"
 
 	[ -n "$ipt_bin" ] && IPT="$ipt_bin" || IPT=""
 	[ -n "$ip6t_bin" ] && IP6T="$ip6t_bin" || IP6T=""
+	[ -n "$nft_bin" ] && NFT="$nft_bin" || NFT=""
+}
+
+ensure_nft_table_ipv4() {
+	[ -n "$NFT" ] || return 1
+
+	$NFT list table ip phantun >/dev/null 2>&1 || $NFT add table ip phantun
+	$NFT list chain ip phantun prerouting >/dev/null 2>&1 || \
+		$NFT 'add chain ip phantun prerouting { type nat hook prerouting priority dstnat; policy accept; }'
+	$NFT list chain ip phantun postrouting >/dev/null 2>&1 || \
+		$NFT 'add chain ip phantun postrouting { type nat hook postrouting priority srcnat; policy accept; }'
+	$NFT list chain ip phantun forward >/dev/null 2>&1 || \
+		$NFT 'add chain ip phantun forward { type filter hook forward priority filter; policy accept; }'
+	$NFT list chain ip phantun output >/dev/null 2>&1 || \
+		$NFT 'add chain ip phantun output { type filter hook output priority filter; policy accept; }'
+}
+
+setup_client_nft() {
+	local tun_name="$1"
+	local tun_peer="$2"
+
+	ensure_nft_table_ipv4 || return 1
+
+	$NFT add rule ip phantun postrouting ip saddr "$tun_peer" oifname != "$tun_name" masquerade 2>/dev/null || true
+	$NFT add rule ip phantun forward iifname "$tun_name" accept 2>/dev/null || true
+	$NFT add rule ip phantun forward oifname "$tun_name" accept 2>/dev/null || true
+	logger -t phantun -p daemon.info "Added nft client rules for $tun_name / $tun_peer"
+	return 0
+}
+
+setup_server_nft() {
+	local local_port="$1"
+	local tun_name="$2"
+	local tun_peer="$3"
+	local remote_port="$4"
+
+	ensure_nft_table_ipv4 || return 1
+
+	$NFT add rule ip phantun prerouting tcp dport "$local_port" dnat to "$tun_peer:$local_port" 2>/dev/null || true
+	$NFT add rule ip phantun postrouting ip daddr "$tun_peer" tcp dport "$remote_port" masquerade 2>/dev/null || true
+	$NFT add rule ip phantun forward iifname "$tun_name" accept 2>/dev/null || true
+	$NFT add rule ip phantun forward oifname "$tun_name" accept 2>/dev/null || true
+	$NFT -f - >/dev/null 2>&1 <<EOF
+add rule ip phantun output tcp sport $local_port tcp flags & rst == rst drop
+EOF
+	logger -t phantun -p daemon.info "Added nft server rules for $tun_name / $tun_peer:$local_port"
+	return 0
+}
+
+cleanup_nft_rules() {
+	[ -n "$NFT" ] || return 0
+	$NFT delete table ip phantun 2>/dev/null || true
 }
 
 load_global_settings() {
@@ -116,6 +170,12 @@ setup_client_iptables() {
 	local tun_peer="$1"
 	local tun_peer6="$2"
 	local ipv4_only="$3"
+	local tun_name="$4"
+
+	if [ -z "$IPT" ] && [ -n "$NFT" ]; then
+		setup_client_nft "$tun_name" "$tun_peer"
+		return $?
+	fi
 
 	[ -n "$IPT" ] || logger -t phantun -p daemon.warn "iptables command unavailable, skipping IPv4 client rules"
 	[ -n "$IPT" ] || tun_peer=""
@@ -145,6 +205,13 @@ setup_server_iptables() {
 	local tun_peer="$2"
 	local tun_peer6="$3"
 	local ipv4_only="$4"
+	local tun_name="$5"
+	local remote_port="$6"
+
+	if [ -z "$IPT" ] && [ -n "$NFT" ]; then
+		setup_server_nft "$local_port" "$tun_name" "$tun_peer" "$remote_port"
+		return $?
+	fi
 
 	[ -n "$IPT" ] || logger -t phantun -p daemon.warn "iptables command unavailable, skipping IPv4 server rules"
 	[ -n "$IPT" ] || tun_peer=""
@@ -248,7 +315,7 @@ start_client() {
 	config_get handshake_packet "$section" handshake_packet
 	
 	# Setup iptables rules
-	setup_client_iptables "$tun_peer" "$tun_peer6" "$ipv4_only"
+	setup_client_iptables "$tun_peer" "$tun_peer6" "$ipv4_only" "$tun_name"
 	
 	# Build command line
 	procd_open_instance "client_$section"
@@ -319,7 +386,7 @@ start_server() {
 	config_get handshake_packet "$section" handshake_packet
 	
 	# Setup iptables rules
-	setup_server_iptables "$local_port" "$tun_peer" "$tun_peer6" "$ipv4_only"
+	setup_server_iptables "$local_port" "$tun_peer" "$tun_peer6" "$ipv4_only" "$tun_name" "$remote_port"
 	
 	# Build command line
 	procd_open_instance "server_$section"
@@ -385,6 +452,8 @@ stop_service() {
 	
 	# Cleanup iptables rules
 	config_load phantun 2>/dev/null || return 0
+	load_global_settings
+	cleanup_nft_rules
 	
 	# Cleanup client rules (Try standard cleanup first)
 	config_foreach cleanup_client_iptables client
@@ -436,6 +505,7 @@ reload_service() {
 
 status() {
 	local running=0
+	load_global_settings
 	
 	echo "=== Phantun Status ==="
 	
